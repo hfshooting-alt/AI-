@@ -196,10 +196,41 @@ async function requestOpenAIReport({ apiKey, model: selectedModel, prompt }) {
 }
 
 
+
+function renumberOrderedItemsBySection(markdown) {
+  const lines = String(markdown || '').split('\n');
+  const out = [];
+  let index = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (/^##\s+/.test(trimmed)) {
+      index = 0;
+      out.push(line);
+      continue;
+    }
+
+    const match = line.match(/^(\s*)\d+\.\s+(.*)$/);
+    if (match) {
+      index += 1;
+      out.push(`${match[1]}${index}. ${match[2]}`);
+      continue;
+    }
+
+    out.push(line);
+  }
+
+  return out.join('\n');
+}
+
 function normalizeMarkdownLayout(markdown) {
   if (!markdown || typeof markdown !== 'string') return markdown;
 
   let text = markdown.replace(/\r\n/g, '\n').trim();
+
+  // Remove stray standalone star lines from model output.
+  text = text.replace(/^\s*\*\s*$/gm, '');
 
   // Ensure headings start on new lines.
   text = text.replace(/([^\n])\s+(#{1,6}\s)/g, '$1\n\n$2');
@@ -219,6 +250,22 @@ function normalizeMarkdownLayout(markdown) {
 
   // Ensure major section headings stand out.
   text = text.replace(/^(##\s*[一二三四五六七八九十]+、[^\n]*)$/gm, '\n$1\n');
+
+  // Renumber ordered items per section to avoid repeated '1.' issue.
+  text = renumberOrderedItemsBySection(text);
+
+  // Ensure the new UI section always exists.
+  if (!/##\s*五、AI大厂与投资机构资讯/.test(text)) {
+    text += `
+
+## 五、AI大厂与投资机构资讯
+
+1. **（占位）待补充大厂与投资机构动态**
+   ○ **事件：** 待补充。
+   ○ **关键进展：**
+     ■ **要点1：** 待补充。
+`;
+  }
 
   // Trim excessive blank lines.
   text = text.replace(/\n{3,}/g, '\n\n').trim();
@@ -357,6 +404,17 @@ Twitter (X): Elon Musk, Sam Altman, Andrej Karpathy, Yann LeCun, Demis Hassabis,
 
 ## 四、其他值得关注的动向
 * **[简短标题]：** [一句话描述事实，发帖人作为Reference] [查看原帖](url)
+
+## 五、AI大厂与投资机构资讯
+1. **[大厂产品/战略动态标题]**
+   ○ **事件：** [客观事实描述] [查看原帖](url)
+   ○ **关键进展：**
+     ■ **要点1：** [关键细节] [查看原帖](url)
+
+2. **[投资机构/融资/并购动态标题]**
+   ○ **事件：** [客观事实描述] [查看原帖](url)
+   ○ **关键进展：**
+     ■ **要点1：** [关键细节] [查看原帖](url)
 
 **总结：** [总结今日AI领域趋势。]
 
