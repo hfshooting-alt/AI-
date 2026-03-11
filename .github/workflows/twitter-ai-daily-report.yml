@@ -1,0 +1,56 @@
+name: Twitter AI Daily Report
+
+on:
+  schedule:
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+
+jobs:
+  generate-and-send:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: AI日报
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: AI日报/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run daily report pipeline (Apify -> OpenAI -> Email)
+        run: npm run run:daily-report
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          APIFY_ACTOR_ID: ${{ secrets.APIFY_ACTOR_ID }}
+          APIFY_ACTOR_INPUT_JSON: ${{ secrets.APIFY_ACTOR_INPUT_JSON }}
+          APIFY_WAIT_FOR_FINISH_SECONDS: ${{ secrets.APIFY_WAIT_FOR_FINISH_SECONDS }}
+          APIFY_DATASET_LIMIT: ${{ secrets.APIFY_DATASET_LIMIT }}
+
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          OPENAI_TEMPERATURE: ${{ secrets.OPENAI_TEMPERATURE }}
+          REPORT_PROMPT_TEMPLATE: ${{ secrets.REPORT_PROMPT_TEMPLATE }}
+
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_SECURE: ${{ secrets.SMTP_SECURE }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          MAIL_SUBJECT: ${{ secrets.MAIL_SUBJECT }}
+
+      - name: Upload markdown artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twitter-ai-daily-report
+          path: AI日报/artifacts/daily-report.md
