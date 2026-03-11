@@ -150,6 +150,11 @@ async function runApify() {
 }
 
 async function generateReport(items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    const today = new Date().toISOString().slice(0, 10);
+    return `# TwitterAI动态日报\n\n日期：${today}\n\n## 今日概览\n\n今日抓取结果为 0 条有效动态，暂无可整理的 Twitter AI 前沿信息。\n\n## 建议排查\n\n1. 检查 Apify Actor 输入配置是否正确（账号列表、时间窗口、过滤条件）。\n2. 检查目标账号是否在抓取时间段内发布了公开内容。\n3. 检查 APIFY_DATASET_LIMIT 与清洗规则是否过于严格。\n`;
+  }
+
   const apiKey = requireEnv('OPENAI_API_KEY');
   const model = requireEnv('OPENAI_MODEL');
 
@@ -173,9 +178,23 @@ async function generateReport(items) {
   }
 
   const json = await response.json();
-  const text = json?.output_text?.trim();
+  const text = [
+    json?.output_text,
+    ...(json?.output || []).flatMap((item) =>
+      (item?.content || [])
+        .map((contentItem) => contentItem?.text)
+        .filter((value) => typeof value === 'string'),
+    ),
+  ]
+    .filter((value) => typeof value === 'string')
+    .join('\n')
+    .trim();
+
   if (!text) {
-    throw new Error('OpenAI returned empty output_text.');
+    const outputLength = Array.isArray(json?.output) ? json.output.length : 0;
+    throw new Error(
+      `OpenAI returned empty textual output. status=${json?.status || 'unknown'}, output_length=${outputLength}`,
+    );
   }
 
   return text;
