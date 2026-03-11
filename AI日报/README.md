@@ -38,3 +38,5 @@ View your app in AI Studio: https://ai.studio/apps/641843a5-ce53-4d86-aa3d-2aab4
 - `APIFY_TOKEN` 可以填纯 token，也可以直接填带 `?token=...` 的完整 API URL，脚本会自动提取 token。
 - `APIFY_TASK_ID` 已不再使用，无需配置。
 - 仅当设置 `APIFY_ACTOR_INPUT_JSON` 时，脚本才会覆盖输入；未设置时沿用 Actor 默认输入。
+- 当 OpenAI 报 `context_length_exceeded` 时，脚本会自动将输入条目减半重试（350 -> 175 -> 87 ...），直到成功。
+- 可选：`OPENAI_MIN_ITEMS`（默认 20）用于设置自动降采样的最小条目数下限。
