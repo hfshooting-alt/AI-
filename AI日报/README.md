@@ -34,5 +34,7 @@ View your app in AI Studio: https://ai.studio/apps/641843a5-ce53-4d86-aa3d-2aab4
 
 ### Apify 配置注意事项
 
-- `APIFY_ACTOR_ID` 推荐填 `apidojo~tweet-scraper`（若填 `apidojo/tweet-scraper`，脚本会自动转换）。
+- `APIFY_ACTOR_ID` 请填写 Actor 标识：`apidojo/tweet-scraper` 或 `apidojo~tweet-scraper`（脚本会自动兼容这两种写法）。
 - `APIFY_TOKEN` 可以填纯 token，也可以直接填带 `?token=...` 的完整 API URL，脚本会自动提取 token。
+- `APIFY_TASK_ID` 已不再使用，无需配置。
+- 仅当设置 `APIFY_ACTOR_INPUT_JSON` 时，脚本才会覆盖输入；未设置时沿用 Actor 默认输入。
