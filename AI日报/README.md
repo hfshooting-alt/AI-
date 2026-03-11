@@ -18,3 +18,16 @@ View your app in AI Studio: https://ai.studio/apps/641843a5-ce53-4d86-aa3d-2aab4
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## GitHub Actions 自动化日报
+
+仓库已添加工作流：`.github/workflows/twitter-ai-daily-report.yml`。
+
+流程：
+1. 触发 Apify Actor 抓取数据。
+2. 拉取 Actor 输出数据集。
+3. 调用 OpenAI 生成日报 markdown。
+4. 通过 SMTP 发邮件到目标收件箱。
+5. 上传 `artifacts/daily-report.md` 作为 Action 构建产物。
+
+可手动触发（workflow_dispatch），也可按 cron 每天自动触发。
