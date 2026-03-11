@@ -151,13 +151,6 @@ async function fetchApifyDatasetItems({ token, actorId, input }) {
 }
 
 
-function parsePositiveIntEnv(name, fallback) {
-  const value = optionalEnv(name);
-  if (!value) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 async function requestOpenAIReport({ apiKey, model: selectedModel, prompt }) {
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
@@ -218,8 +211,14 @@ function normalizeMarkdownLayout(markdown) {
   text = text.replace(/([^\n])\s+([*-]\s+)/g, '$1\n$2');
 
   // Keep key labels readable.
-  text = text.replace(/\*\*事件：\*\*/g, '\n  - **事件：**');
-  text = text.replace(/\*\*关键进展：\*\*/g, '\n  - **关键进展：**');
+  text = text.replace(/\*\*事件：\*\*/g, '\n  ○ **事件：**');
+  text = text.replace(/\*\*关键进展：\*\*/g, '\n  ○ **关键进展：**');
+
+  // Normalize nested progress bullets to match report style.
+  text = text.replace(/^\s*[-*]\s+\*\*([^\n]+)\*\*[:：]?/gm, '    ■ **$1：**');
+
+  // Ensure major section headings stand out.
+  text = text.replace(/^(##\s*[一二三四五六七八九十]+、[^\n]*)$/gm, '\n$1\n');
 
   // Trim excessive blank lines.
   text = text.replace(/\n{3,}/g, '\n\n').trim();
@@ -277,7 +276,13 @@ Twitter (X): Elon Musk, Sam Altman, Andrej Karpathy, Yann LeCun, Demis Hassabis,
 - 仅输出标准 Markdown，不要输出 HTML。
 - 每个标题（# / ##）必须独占一行，前后保留空行。
 - 每个编号条目（1. / 2. / 3.）必须独占一行。
-- “事件/关键进展”使用子级列表缩进，不得与标题写在同一行。
+- 严格按如下层级输出：
+  1. "事件标题"
+     ○ **事件：** ... [查看原帖](url)
+     ○ **关键进展：**
+       ■ **要点1：** ... [查看原帖](url)
+       ■ **要点2：** ... [查看原帖](url)
+- 所有链接统一使用 Markdown 链接，不要裸 URL。
 - 禁止将多个段落、标题、列表拼接在一行。`;
 }
 
@@ -318,16 +323,10 @@ async function generateReport(items) {
 
   const apiKey = requireEnv('OPENAI_API_KEY');
   const openaiModel = requireEnv('OPENAI_MODEL');
-  const inputItemsLimit = parsePositiveIntEnv('OPENAI_INPUT_ITEMS', 80);
 
   console.log(`Using OPENAI_MODEL=${openaiModel}`);
 
-  const selectedItems = items.slice(0, Math.min(items.length, inputItemsLimit));
-  if (selectedItems.length < items.length) {
-    console.log(`OpenAI input items limited to ${selectedItems.length}/${items.length} via OPENAI_INPUT_ITEMS.`);
-  }
-
-  const prompt = getPromptTemplate().replace('{{APIFY_ITEMS_JSON}}', JSON.stringify(selectedItems, null, 2));
+  const prompt = getPromptTemplate().replace('{{APIFY_ITEMS_JSON}}', JSON.stringify(items, null, 2));
   const result = await requestOpenAIReport({ apiKey, model: openaiModel, prompt });
   return normalizeMarkdownLayout(result);
 }
