@@ -84,8 +84,10 @@ function parsePeopleRoster(raw) {
         .map((row) => {
           if (typeof row === 'string') return { name: row, handle: normalizeHandle(row) };
           return {
-            name: String(row?.name || row?.fullname || row?.displayName || row?.handle || '').trim(),
-            handle: normalizeHandle(row?.handle || row?.username || row?.account || row?.twitter),
+            name: String(row?.name || row?.fullname || row?.displayName || row?.item || row?.handle || '').trim(),
+            handle: normalizeHandle(
+              row?.item || row?.handle || row?.username || row?.account || row?.twitter || row?.x || row?.id,
+            ),
           };
         })
         .filter((r) => r.handle);
@@ -97,8 +99,11 @@ function parsePeopleRoster(raw) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [name, handle] = line.split(',').map((v) => v.trim());
-      return { name: name || handle, handle: normalizeHandle(handle || name) };
+      const parts = line.includes(',')
+        ? line.split(',').map((v) => v.trim())
+        : line.split(/\s+/).map((v) => v.trim());
+      const [name, itemOrHandle] = parts;
+      return { name: name || itemOrHandle, handle: normalizeHandle(itemOrHandle || name) };
     })
     .filter((r) => r.handle);
 }
@@ -407,6 +412,7 @@ async function main() {
   const weekAgo = formatBjtDateDaysAgo(7);
 
   const weeklyInput = buildApifyInput(templateInput, roster.map((p) => p.handle), weekAgo, today, 1000);
+  console.log(`Example weekly searchTerm: from:${roster[0].handle} since:${weekAgo} until:${today}`);
   const weekly = await runApify(weeklyInput);
   console.log(`Weekly items: ${weekly.items.length}`);
 
@@ -418,6 +424,7 @@ async function main() {
   await fs.writeFile('artifacts/top20-ranking.json', JSON.stringify(top20, null, 2), 'utf8');
 
   const dailyInput = buildApifyInput(templateInput, top20.map((p) => p.handle), yesterday, today, 1000);
+  if (top20.length > 0) console.log(`Example daily searchTerm: from:${top20[0].handle} since:${yesterday} until:${today}`);
   const daily = await runApify(dailyInput);
   const aiRelatedDaily = daily.items.filter(isAiRelatedItem);
   console.log(`Daily items: ${daily.items.length}, AI-related: ${aiRelatedDaily.length}`);
