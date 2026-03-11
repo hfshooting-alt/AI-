@@ -168,7 +168,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function requestOpenAIReport({ apiKey, model, prompt }) {
+async function requestOpenAIReport({ apiKey, model: selectedModel, prompt }) {
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
@@ -176,7 +176,7 @@ async function requestOpenAIReport({ apiKey, model, prompt }) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model,
+      model: selectedModel,
       input: prompt,
       temperature: Number(process.env.OPENAI_TEMPERATURE || 0.2),
     }),
@@ -186,13 +186,6 @@ async function requestOpenAIReport({ apiKey, model, prompt }) {
     const body = await response.text();
     throw new Error(`OpenAI request failed: ${response.status} ${body}`);
   }
-
-  const apiKey = requireEnv('OPENAI_API_KEY');
-  const model = requireEnv('OPENAI_MODEL');
-  const minItems = parsePositiveIntEnv('OPENAI_MIN_ITEMS', 20);
-  const retryDelayMs = parsePositiveIntEnv('OPENAI_RETRY_DELAY_MS', 1500);
-
-  console.log(`Using OPENAI_MODEL=${model}`);
 
   let itemLimit = items.length;
   while (itemLimit >= 1) {
@@ -344,18 +337,18 @@ async function generateReport(items) {
   }
 
   const apiKey = requireEnv('OPENAI_API_KEY');
-  const model = requireEnv('OPENAI_MODEL');
+  const openaiModel = requireEnv('OPENAI_MODEL');
   const minItems = parsePositiveIntEnv('OPENAI_MIN_ITEMS', 20);
   const retryDelayMs = parsePositiveIntEnv('OPENAI_RETRY_DELAY_MS', 1500);
 
-  console.log(`Using OPENAI_MODEL=${model}`);
+  console.log(`Using OPENAI_MODEL=${openaiModel}`);
 
   let itemLimit = items.length;
   while (itemLimit >= 1) {
     try {
       const limitedItems = items.slice(0, itemLimit);
       const prompt = getPromptTemplate().replace('{{APIFY_ITEMS_JSON}}', JSON.stringify(limitedItems, null, 2));
-      const result = await requestOpenAIReport({ apiKey, model, prompt });
+      const result = await requestOpenAIReport({ apiKey, model: openaiModel, prompt });
 
       if (itemLimit < items.length) {
         console.warn(
