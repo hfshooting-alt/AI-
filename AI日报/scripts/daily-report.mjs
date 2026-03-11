@@ -107,18 +107,19 @@ Twitter (X): Elon Musk, Sam Altman, Andrej Karpathy, Yann LeCun, Demis Hassabis,
 async function runApify() {
   const token = normalizeApifyToken(requireEnv('APIFY_TOKEN'));
   const actorId = normalizeActorId(requireEnv('APIFY_ACTOR_ID'));
-  const waitForFinish = Number(process.env.APIFY_WAIT_FOR_FINISH_SECONDS || 300);
-  const maxItems = Number(process.env.APIFY_DATASET_LIMIT || 200);
 
   const input = process.env.APIFY_ACTOR_INPUT_JSON
     ? JSON.parse(process.env.APIFY_ACTOR_INPUT_JSON)
     : {};
 
-  const runUrl = new URL(`https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/runs`);
-  runUrl.searchParams.set('waitForFinish', String(waitForFinish));
-  runUrl.searchParams.set('token', token);
+  // Let Apify own execution/data limits. We only trigger the actor and collect its dataset output.
+  const runSyncUrl = new URL(
+    `https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items`,
+  );
+  runSyncUrl.searchParams.set('token', token);
+  runSyncUrl.searchParams.set('clean', 'true');
 
-  const runResp = await fetch(runUrl, {
+  const runResp = await fetch(runSyncUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -130,43 +131,23 @@ async function runApify() {
     throw new Error(`Apify run failed: ${runResp.status} ${await runResp.text()}`);
   }
 
-  const runJson = await runResp.json();
-  const runData = runJson?.data;
-  if (!runData) {
-    throw new Error('Apify run response missing data.');
-  }
-  if (runData.status !== 'SUCCEEDED') {
-    throw new Error(`Apify run did not succeed. Status: ${runData.status}`);
-  }
-
-  const datasetId = runData.defaultDatasetId;
-  if (!datasetId) {
-    throw new Error('Apify run has no defaultDatasetId.');
-  }
-
-  const datasetUrl = new URL(`https://api.apify.com/v2/datasets/${datasetId}/items`);
-  datasetUrl.searchParams.set('clean', 'true');
-  datasetUrl.searchParams.set('limit', String(maxItems));
-  datasetUrl.searchParams.set('token', token);
-
-  const itemsResp = await fetch(datasetUrl);
-
-  if (!itemsResp.ok) {
-    throw new Error(`Apify dataset fetch failed: ${itemsResp.status} ${await itemsResp.text()}`);
-  }
-
-  const items = await itemsResp.json();
+  const items = await runResp.json();
   if (!Array.isArray(items)) {
-    throw new Error('Apify dataset items are not an array.');
+    throw new Error('Apify returned non-array dataset items.');
   }
 
-  return { items, runData, datasetId };
+  // run-sync endpoint returns items directly and does not include run metadata in the body.
+  return {
+    items,
+    runData: { id: 'run-sync-get-dataset-items', status: 'SUCCEEDED' },
+    datasetId: 'run-sync-output',
+  };
 }
 
 async function generateReport(items) {
   if (!Array.isArray(items) || items.length === 0) {
     const today = new Date().toISOString().slice(0, 10);
-    return `# TwitterAI动态日报\n\n日期：${today}\n\n## 今日概览\n\n今日抓取结果为 0 条有效动态，暂无可整理的 Twitter AI 前沿信息。\n\n## 建议排查\n\n1. 检查 Apify Actor 输入配置是否正确（账号列表、时间窗口、过滤条件）。\n2. 检查目标账号是否在抓取时间段内发布了公开内容。\n3. 检查 APIFY_DATASET_LIMIT 与清洗规则是否过于严格。\n`;
+    return `# TwitterAI动态日报\n\n日期：${today}\n\n## 今日概览\n\n今日抓取结果为 0 条有效动态，暂无可整理的 Twitter AI 前沿信息。\n\n## 建议排查\n\n1. 检查 Apify Actor 输入配置是否正确（账号列表、时间窗口、过滤条件）。\n2. 检查目标账号是否在抓取时间段内发布了公开内容。\n3. 检查 Actor 内的过滤规则、时间窗口与账号列表设置。\n`;
   }
 
   const apiKey = requireEnv('OPENAI_API_KEY');
