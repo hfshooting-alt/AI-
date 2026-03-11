@@ -1,0 +1,5 @@
+{
+  "name": "AI Influencer Tracker",
+  "description": "Daily tracking and summarization of top 20 AI influencers on X and Weibo.",
+  "requestFramePermissions": []
+}
