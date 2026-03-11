@@ -64,15 +64,8 @@ function normalizeActorId(rawActorId) {
 }
 
 
-function looksLikeActorIdentifier(value) {
-  if (!value) return false;
-  return value.includes('/') || value.includes('~');
-}
-
-async function fetchApifyDatasetItems({ token, taskId, actorId, input }) {
-  const runPath = taskId
-    ? `https://api.apify.com/v2/actor-tasks/${encodeURIComponent(taskId)}/run-sync-get-dataset-items`
-    : `https://api.apify.com/v2/acts/${encodeURIComponent(normalizeActorId(actorId))}/run-sync-get-dataset-items`;
+async function fetchApifyDatasetItems({ token, actorId, input }) {
+  const runPath = `https://api.apify.com/v2/acts/${encodeURIComponent(normalizeActorId(actorId))}/run-sync-get-dataset-items`;
 
   const runSyncUrl = new URL(runPath);
   runSyncUrl.searchParams.set('token', token);
@@ -157,43 +150,17 @@ Twitter (X): Elon Musk, Sam Altman, Andrej Karpathy, Yann LeCun, Demis Hassabis,
 
 async function runApify() {
   const token = normalizeApifyToken(requireEnv('APIFY_TOKEN'));
-  const rawTaskId = optionalEnv('APIFY_TASK_ID');
-  const actorIdFromEnv = optionalEnv('APIFY_ACTOR_ID');
-
-  const taskIdLooksLikeActor = looksLikeActorIdentifier(rawTaskId);
-  const taskId = rawTaskId && !taskIdLooksLikeActor ? rawTaskId : undefined;
-  const actorId = actorIdFromEnv || (taskIdLooksLikeActor ? rawTaskId : undefined);
-
-  if (!taskId && !actorId) {
-    throw new Error('Missing required environment variable: APIFY_TASK_ID or APIFY_ACTOR_ID');
-  }
+  const actorId = requireEnv('APIFY_ACTOR_ID');
 
   const inputRaw = optionalEnv('APIFY_ACTOR_INPUT_JSON');
   const input = inputRaw ? JSON.parse(inputRaw) : undefined;
 
-  try {
-    const items = await fetchApifyDatasetItems({ token, taskId, actorId, input });
-    return {
-      items,
-      runData: { id: taskId || normalizeActorId(actorId), status: 'SUCCEEDED' },
-      datasetId: 'run-sync-output',
-    };
-  } catch (error) {
-    const message = error?.message || String(error);
-    const canFallbackToActor = taskId && actorId;
-    const isTaskNotFound = /Actor task was not found|record-not-found/i.test(message);
-
-    if (canFallbackToActor && isTaskNotFound) {
-      const items = await fetchApifyDatasetItems({ token, taskId: undefined, actorId, input });
-      return {
-        items,
-        runData: { id: `${taskId} (fallback->${normalizeActorId(actorId)})`, status: 'SUCCEEDED' },
-        datasetId: 'run-sync-output',
-      };
-    }
-
-    throw error;
-  }
+  const items = await fetchApifyDatasetItems({ token, actorId, input });
+  return {
+    items,
+    runData: { id: normalizeActorId(actorId), status: 'SUCCEEDED' },
+    datasetId: 'run-sync-output',
+  };
 }
 
 async function generateReport(items) {
