@@ -3,7 +3,6 @@ import nodemailer from 'nodemailer';
 
 const requiredEnv = [
   'APIFY_TOKEN',
-  'APIFY_ACTOR_ID',
   'OPENAI_API_KEY',
   'OPENAI_MODEL',
   'SMTP_HOST',
@@ -19,6 +18,13 @@ function requireEnv(name) {
   if (!value || !value.trim()) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
+  return value.trim();
+}
+
+
+function optionalEnv(name) {
+  const value = process.env[name];
+  if (!value || !value.trim()) return undefined;
   return value.trim();
 }
 
@@ -106,26 +112,35 @@ Twitter (X): Elon Musk, Sam Altman, Andrej Karpathy, Yann LeCun, Demis Hassabis,
 
 async function runApify() {
   const token = normalizeApifyToken(requireEnv('APIFY_TOKEN'));
-  const actorId = normalizeActorId(requireEnv('APIFY_ACTOR_ID'));
+  const taskId = optionalEnv('APIFY_TASK_ID');
+  const actorId = optionalEnv('APIFY_ACTOR_ID');
 
-  const input = process.env.APIFY_ACTOR_INPUT_JSON
-    ? JSON.parse(process.env.APIFY_ACTOR_INPUT_JSON)
-    : {};
+  if (!taskId && !actorId) {
+    throw new Error('Missing required environment variable: APIFY_TASK_ID or APIFY_ACTOR_ID');
+  }
 
-  // Let Apify own execution/data limits. We only trigger the actor and collect its dataset output.
-  const runSyncUrl = new URL(
-    `https://api.apify.com/v2/acts/${encodeURIComponent(actorId)}/run-sync-get-dataset-items`,
-  );
+  const inputRaw = optionalEnv('APIFY_ACTOR_INPUT_JSON');
+  const input = inputRaw ? JSON.parse(inputRaw) : undefined;
+
+  // Prefer task execution when available to keep input source-of-truth in Apify console.
+  const runPath = taskId
+    ? `https://api.apify.com/v2/actor-tasks/${encodeURIComponent(taskId)}/run-sync-get-dataset-items`
+    : `https://api.apify.com/v2/acts/${encodeURIComponent(normalizeActorId(actorId))}/run-sync-get-dataset-items`;
+
+  const runSyncUrl = new URL(runPath);
   runSyncUrl.searchParams.set('token', token);
   runSyncUrl.searchParams.set('clean', 'true');
 
-  const runResp = await fetch(runSyncUrl, {
+  const requestOptions = {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(input),
-  });
+  };
+
+  if (input !== undefined) {
+    requestOptions.headers = { 'Content-Type': 'application/json' };
+    requestOptions.body = JSON.stringify(input);
+  }
+
+  const runResp = await fetch(runSyncUrl, requestOptions);
 
   if (!runResp.ok) {
     throw new Error(`Apify run failed: ${runResp.status} ${await runResp.text()}`);
@@ -136,10 +151,9 @@ async function runApify() {
     throw new Error('Apify returned non-array dataset items.');
   }
 
-  // run-sync endpoint returns items directly and does not include run metadata in the body.
   return {
     items,
-    runData: { id: 'run-sync-get-dataset-items', status: 'SUCCEEDED' },
+    runData: { id: taskId || normalizeActorId(actorId), status: 'SUCCEEDED' },
     datasetId: 'run-sync-output',
   };
 }
