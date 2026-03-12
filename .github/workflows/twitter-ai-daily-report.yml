@@ -49,9 +49,12 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
           MAIL_SUBJECT: ${{ secrets.MAIL_SUBJECT }}
 
-      - name: Upload markdown artifact
+      - name: Upload report artifacts
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: twitter-ai-daily-report
-          path: AI日报/artifacts/daily-report.md
+          path: |
+            AI日报/artifacts/daily-report.md
+            AI日报/artifacts/ai-weekly-output-counts.md
+            AI日报/artifacts/ai-weekly-output-counts.csv
