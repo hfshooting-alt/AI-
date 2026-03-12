@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import nodemailer from 'nodemailer';
 
 const requiredEnv = [
@@ -241,6 +242,27 @@ function rankPeople(items, roster) {
     }))
     .sort((a, b) => b.outputCount - a.outputCount);
 }
+
+
+async function writeWeeklyCountsTable(ranking) {
+  const header = '| 排名 | 本名 | X账号 | 近一周动态数量 |\n|---:|---|---|---:|';
+  const rows = ranking.map((p, i) => `| ${i + 1} | ${p.name} | @${p.handle} | ${p.outputCount} |`);
+  const markdown = `${header}\n${rows.join('\n')}\n`;
+  const csvHeader = 'rank,name,handle,weekly_output_count';
+  const csvRows = ranking.map((p, i) => `${i + 1},"${String(p.name).replaceAll('"', '""')}",${p.handle},${p.outputCount}`);
+  const csv = `${csvHeader}\n${csvRows.join('\n')}\n`;
+
+  const desktopDir = path.join(process.env.HOME || '.', 'Desktop');
+  await fs.mkdir(desktopDir, { recursive: true });
+  const markdownPath = path.join(desktopDir, 'ai-weekly-output-counts.md');
+  const csvPath = path.join(desktopDir, 'ai-weekly-output-counts.csv');
+
+  await fs.writeFile(markdownPath, markdown, 'utf8');
+  await fs.writeFile(csvPath, csv, 'utf8');
+
+  return { markdownPath, csvPath };
+}
+
 
 function appendTop20Appendix(markdown, top20, stats) {
   const safeStats = stats || { actionCount: 0, hotspotCount: 0, hotspots: [] };
@@ -508,6 +530,9 @@ async function main() {
   const ranking = rankPeople(weekly.items, roster);
   const top20 = ranking.slice(0, 20);
   await fs.writeFile('artifacts/top20-ranking.json', JSON.stringify(top20, null, 2), 'utf8');
+
+  const tablePaths = await writeWeeklyCountsTable(ranking);
+  console.log(`Weekly output table saved: ${tablePaths.markdownPath} and ${tablePaths.csvPath}`);
 
   const dailyInput = buildApifyInput(templateInput, top20.map((p) => p.handle), yesterday, today, 1000);
   if (top20.length > 0) console.log(`Example daily searchTerm: from:${top20[0].handle} since:${yesterday} until:${today}`);
