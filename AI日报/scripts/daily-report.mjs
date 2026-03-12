@@ -226,6 +226,17 @@ function getHotspotStats(items) {
   };
 }
 
+  const hotspots = Array.from(counts.entries())
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    actionCount: items.length,
+    hotspotCount: hotspots.length,
+    hotspots,
+  };
+}
+
 function rankPeople(items, roster) {
   const counts = new Map();
   for (const item of items) {

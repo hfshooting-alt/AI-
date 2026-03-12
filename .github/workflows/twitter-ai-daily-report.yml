@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Syntax check daily-report script
+        run: node --check scripts/daily-report.mjs
+
       - name: Run daily report pipeline (Apify -> OpenAI -> Email)
         run: npm run run:daily-report
         env:
