@@ -207,13 +207,32 @@ function appendTop20Appendix(markdown, top20) {
   return `${markdown.trim()}\n\n## 附录：今日TOP20活跃人物\n\n${rows}\n`;
 }
 
+function relabelSourceLinksWithRealNames(markdown, people) {
+  const map = new Map((people || []).map((p) => [normalizeHandle(p.handle), p.name || p.handle]));
+
+  return String(markdown || '').replace(/\[查看原帖\]\((https?:\/\/[^)]+)\)/g, (_, url) => {
+    let handle = '';
+    try {
+      const u = new URL(url);
+      const parts = u.pathname.split('/').filter(Boolean);
+      handle = normalizeHandle(parts[0] || '');
+    } catch {
+      const m = String(url).match(/x\.com\/([^/\s?#]+)/i);
+      handle = normalizeHandle(m?.[1] || '');
+    }
+
+    const realName = map.get(handle);
+    return realName ? `[@${realName}](${url})` : `[@来源](${url})`;
+  });
+}
+
 function normalizeMarkdownLayout(markdown) {
   let text = String(markdown || '').replace(/\r\n/g, '\n').trim();
   text = text.replace(/^\s*\*\s*$/gm, '');
   text = text.replace(/([^\n])\s+(#{1,6}\s)/g, '$1\n\n$2');
   text = text.replace(/([^\n])\s+(\d+\.\s+)/g, '$1\n\n$2');
-  text = text.replace(/\*\*事件：\*\*/g, '\n  ○ **事件：**');
-  text = text.replace(/\*\*关键进展：\*\*/g, '\n  ○ **关键进展：**');
+  text = text.replace(/\*\*事件：\*\*/g, '\n  ○ **热点解析：**');
+  text = text.replace(/\*\*关键进展：\*\*/g, '\n  ○ **相关动态：**');
 
   const lines = text.split('\n');
   let idx = 0;
@@ -318,12 +337,17 @@ function getPromptTemplate() {
   return process.env.REPORT_PROMPT_TEMPLATE || `你是一个专业的AI行业分析师和情报Agent。
 请根据提供的数据生成日报。
 
+# AI Pulse - X Daily Brief
+
 输出要求：
 1) 先输出TOP3热度事件（按相关输出量排序）
 2) 再输出7-12条中热度事件，按3-4个聚类大点组织
 3) 不需要按传统行业大类分类
-4) 每条必须带[查看原帖](url)
-5) 输出Markdown，结构清晰，分级列表明确
+4) 每个事件统一结构：
+   - ○ **热点解析：** [事件抽象总结]
+   - ○ **相关动态：** [参与者动态，分点列出]
+5) 关联动态中的来源链接，不使用“查看原帖”，统一写成 [@本名](url)（本名不是X用户名）
+6) 输出Markdown，结构清晰，分级列表明确
 `;
 }
 
@@ -354,7 +378,7 @@ async function runApify(input) {
 
 async function generateReport(items, top20) {
   if (!Array.isArray(items) || items.length === 0) {
-    return `# TwitterAI动态日报\n\n今日无可用AI相关内容。\n`;
+    return `# AI Pulse - X Daily Brief\n\n今日无可用AI相关内容。\n`;
   }
 
   const apiKey = requireEnv('OPENAI_API_KEY');
@@ -363,7 +387,9 @@ async function generateReport(items, top20) {
 
   const prompt = `${getPromptTemplate()}\n\n数据如下：\n${JSON.stringify(items, null, 2)}`;
   const markdown = await requestOpenAIReport({ apiKey, model, prompt });
-  return appendTop20Appendix(normalizeMarkdownLayout(markdown), top20);
+  const normalized = normalizeMarkdownLayout(markdown);
+  const withRealNameLinks = relabelSourceLinksWithRealNames(normalized, top20);
+  return appendTop20Appendix(withRealNameLinks, top20);
 }
 
 async function sendEmail(reportMarkdown) {
