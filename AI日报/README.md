@@ -53,3 +53,6 @@ View your app in AI Studio: https://ai.studio/apps/641843a5-ce53-4d86-aa3d-2aab4
 - 事件结构统一为“热点解析 + 相关动态”。
 
 - 附录标题统一为 `TOP20活跃人物`，每位人物包含：本名、账号、输出数量、一句话描述（来自人物库 description/desc/bio 字段）。
+
+- 正文末尾新增 `Today's Summary`（面向高管），按“关键结论/重要原因/业务影响”结构化输出，限制在200字内。
+- 附录新增“每日Action数量”和“每日涉及热点数量”，并给出热点概览排序。

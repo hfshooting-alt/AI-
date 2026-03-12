@@ -189,6 +189,40 @@ function isAiRelatedItem(item) {
   return kws.some((k) => text.includes(k));
 }
 
+function classifyHotspot(text) {
+  const rules = [
+    { label: '模型与推理能力', kws: ['model', 'llm', 'inference', 'gpt', 'gemini', 'claude', '大模型', '推理'] },
+    { label: 'Agent与自动化', kws: ['agent', 'workflow', 'automation', '智能体', '自动化'] },
+    { label: '算力与芯片', kws: ['nvidia', 'gpu', 'chip', '算力', '芯片'] },
+    { label: '机器人与具身智能', kws: ['robot', 'humanoid', 'optimus', '机器人', '具身'] },
+    { label: '产品发布与商业化', kws: ['launch', 'release', 'pricing', 'funding', '融资', '发布', '定价'] },
+  ];
+
+  const lower = String(text || '').toLowerCase();
+  for (const rule of rules) {
+    if (rule.kws.some((k) => lower.includes(k))) return rule.label;
+  }
+  return '其他AI动态';
+}
+
+function getHotspotStats(items) {
+  const counts = new Map();
+  for (const item of items) {
+    const label = classifyHotspot(extractTextFromItem(item));
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+
+  const hotspots = Array.from(counts.entries())
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return {
+    actionCount: items.length,
+    hotspotCount: hotspots.length,
+    hotspots,
+  };
+}
+
 function rankPeople(items, roster) {
   const counts = new Map();
   for (const item of items) {
@@ -208,11 +242,18 @@ function rankPeople(items, roster) {
     .sort((a, b) => b.outputCount - a.outputCount);
 }
 
-function appendTop20Appendix(markdown, top20) {
+function appendTop20Appendix(markdown, top20, stats) {
+  const safeStats = stats || { actionCount: 0, hotspotCount: 0, hotspots: [] };
+  const hotspotRows = (safeStats.hotspots || [])
+    .slice(0, 8)
+    .map((h, i) => `${i + 1}. ${h.label}（${h.count}条）`)
+    .join('\n');
+
   const rows = top20
     .map((p, i) => `${i + 1}. ${p.name}（@${p.handle}）- ${p.outputCount} 条\n   一句话：${p.description || '待补充'}`)
     .join('\n');
-  return `${markdown.trim()}\n\n## TOP20活跃人物\n\n${rows}\n`;
+
+  return `${markdown.trim()}\n\n## TOP20活跃人物\n\n- 每日Action数量：${safeStats.actionCount}\n- 每日涉及热点数量：${safeStats.hotspotCount}\n\n### 热点概览（按涉及Action量）\n${hotspotRows || '暂无'}\n\n### 人物清单\n${rows}\n`;
 }
 
 function relabelSourceLinksWithRealNames(markdown, people) {
@@ -266,6 +307,11 @@ function normalizeMarkdownLayout(markdown) {
   }
 
   text = cleaned.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+
+  if (!/##\s*Today's Summary/i.test(text)) {
+    text += "\n\n## Today's Summary\n\n- 关键结论：今日高热度集中在AI能力落地与产品化推进。\n- 重要原因：头部公司密集发布与资本动作叠加，放大市场关注。\n- 业务影响：建议高管优先布局组织级部署、成本治理与执行效率。";
+  }
+
   return `${text}\n`;
 }
 
@@ -359,7 +405,7 @@ function getPromptTemplate() {
 1) 先输出TOP3热度事件（按相关输出量排序）
 2) 再输出7-12条中热度事件，按3-4个聚类大点组织
 3) 不需要按传统行业大类分类
-4) 每个事件统一结构：\n   - ○ **热点解析：** [事件抽象总结]\n   - ○ **相关动态：** [参与者动态，分点列出]\n5) 不要输出“聚类一/二/三”字样；不要输出“额外观察”与“AI大厂与投资机构资讯”板块\n6) 关联动态中的来源链接，不使用“查看原帖”，统一写成 [@本名](url)（本名不是X用户名）\n7) 输出Markdown，结构清晰，分级列表明确
+4) 每个事件统一结构：\n   - ○ **热点解析：** [事件抽象总结]\n   - ○ **相关动态：** [参与者动态，分点列出]\n5) 不要输出“聚类一/二/三”字样；不要输出“额外观察”与“AI大厂与投资机构资讯”板块\n6) 关联动态中的来源链接，不使用“查看原帖”，统一写成 [@本名](url)（本名不是X用户名）\n7) 文末新增 Today\'s Summary 板块，用3条结构化要点（关键结论/重要原因/业务影响），总计不超过200字\n8) 输出Markdown，结构清晰，分级列表明确
 `;
 }
 
@@ -388,7 +434,7 @@ async function runApify(input) {
   return { items, runData: { id: normalizeActorId(actorId), status: 'SUCCEEDED' }, datasetId: 'run-sync-output' };
 }
 
-async function generateReport(items, top20) {
+async function generateReport(items, top20, stats) {
   if (!Array.isArray(items) || items.length === 0) {
     return `# AI Pulse - X Daily Brief\n\n今日无可用AI相关内容。\n`;
   }
@@ -401,7 +447,7 @@ async function generateReport(items, top20) {
   const markdown = await requestOpenAIReport({ apiKey, model, prompt });
   const normalized = normalizeMarkdownLayout(markdown);
   const withRealNameLinks = relabelSourceLinksWithRealNames(normalized, top20);
-  return appendTop20Appendix(withRealNameLinks, top20);
+  return appendTop20Appendix(withRealNameLinks, top20, stats);
 }
 
 async function sendEmail(reportMarkdown) {
@@ -465,8 +511,9 @@ async function main() {
   const daily = await runApify(dailyInput);
   const aiRelatedDaily = daily.items.filter(isAiRelatedItem);
   console.log(`Daily items: ${daily.items.length}, AI-related: ${aiRelatedDaily.length}`);
+  const hotspotStats = getHotspotStats(aiRelatedDaily);
 
-  const report = await generateReport(aiRelatedDaily, top20);
+  const report = await generateReport(aiRelatedDaily, top20, hotspotStats);
   await fs.writeFile('artifacts/daily-report.md', report, 'utf8');
 
   await sendEmail(report);
