@@ -208,26 +208,24 @@ function classifyHotspot(text) {
   return '其他AI动态';
 }
 
-function getHotspotStats(items) {
-  const counts = new Map();
-  for (const item of items) {
+const getHotspotStats = (items) => {
+  const counts = items.reduce((map, item) => {
     const label = classifyHotspot(extractTextFromItem(item));
-    counts.set(label, (counts.get(label) || 0) + 1);
-  }
-  return '其他AI动态';
-}
+    map.set(label, (map.get(label) || 0) + 1);
+    return map;
+  }, new Map());
 
   const hotspots = Array.from(counts.entries())
     .map(([label, count]) => ({ label, count }))
     .sort((a, b) => b.count - a.count);
 
-  const result = {
+  return {
     actionCount: items.length,
     hotspotCount: hotspots.length,
     hotspots,
   };
-  return result;
-}
+};
+
 
 function rankPeople(items, roster) {
   const counts = new Map();
