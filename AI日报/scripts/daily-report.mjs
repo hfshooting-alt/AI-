@@ -201,7 +201,9 @@ function classifyHotspot(text) {
 
   const lower = String(text || '').toLowerCase();
   for (const rule of rules) {
-    if (rule.kws.some((k) => lower.includes(k))) return rule.label;
+    if (rule.kws.some((k) => lower.includes(k))) {
+      return rule.label;
+    }
   }
   return '其他AI动态';
 }
@@ -219,22 +221,12 @@ function getHotspotStats(items) {
     .map(([label, count]) => ({ label, count }))
     .sort((a, b) => b.count - a.count);
 
-  return {
+  const result = {
     actionCount: items.length,
     hotspotCount: hotspots.length,
     hotspots,
   };
-}
-
-  const hotspots = Array.from(counts.entries())
-    .map(([label, count]) => ({ label, count }))
-    .sort((a, b) => b.count - a.count);
-
-  return {
-    actionCount: items.length,
-    hotspotCount: hotspots.length,
-    hotspots,
-  };
+  return result;
 }
 
 function rankPeople(items, roster) {
@@ -255,7 +247,6 @@ function rankPeople(items, roster) {
     }))
     .sort((a, b) => b.outputCount - a.outputCount);
 }
-
 
 async function writeWeeklyCountsTable(ranking) {
   const header = '| 排名 | 本名 | X账号 | 近一周动态数量 |\n|---:|---|---|---:|';

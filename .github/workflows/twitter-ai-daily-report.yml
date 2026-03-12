@@ -25,6 +25,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Debug script fingerprint
+        run: |
+          node -v
+          sha256sum scripts/daily-report.mjs
+          nl -ba scripts/daily-report.mjs | sed -n '210,230p'
+
       - name: Syntax check daily-report script
         run: node --check scripts/daily-report.mjs
 
