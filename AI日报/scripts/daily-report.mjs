@@ -283,6 +283,26 @@ async function writeWeeklyCountsTable(ranking) {
   const csvRows = ranking.map((p, i) => `${i + 1},"${String(p.name).replaceAll('"', '""')}",${p.handle},${p.outputCount}`);
   const csv = `${csvHeader}\n${csvRows.join('\n')}\n`;
 
+  const meta = new Map(roster.map((r) => [normalizeHandle(r.handle), { name: r.name || r.handle, title: r.title || '', description: r.description || '' }]));
+  return Array.from(counts.entries())
+    .map(([handle, outputCount]) => ({
+      name: (meta.get(handle)?.name) || handle,
+      title: (meta.get(handle)?.title) || '',
+      description: (meta.get(handle)?.description) || '',
+      handle,
+      outputCount,
+    }))
+    .sort((a, b) => b.outputCount - a.outputCount);
+}
+
+async function writeWeeklyCountsTable(ranking) {
+  const header = '| 排名 | 本名 | X账号 | 近一周动态数量 |\n|---:|---|---|---:|';
+  const rows = ranking.map((p, i) => `| ${i + 1} | ${p.name} | @${p.handle} | ${p.outputCount} |`);
+  const markdown = `${header}\n${rows.join('\n')}\n`;
+  const csvHeader = 'rank,name,handle,weekly_output_count';
+  const csvRows = ranking.map((p, i) => `${i + 1},"${String(p.name).replaceAll('"', '""')}",${p.handle},${p.outputCount}`);
+  const csv = `${csvHeader}\n${csvRows.join('\n')}\n`;
+
   const artifactsDir = 'artifacts';
   await fs.mkdir(artifactsDir, { recursive: true });
   const artifactMarkdownPath = `${artifactsDir}/ai-weekly-output-counts.md`;
@@ -484,7 +504,8 @@ function markdownToStyledHtml(markdown) {
         const value = plain.replace(/^热点解析[:：]\s*/, '').trim();
         if (value) currentEvent.analysis.push(value);
       } else if (/why it matters|管理层意义|业务影响|重要性/i.test(plain)) {
-        // explicitly ignore this block per report style requirement
+        const value = plain.replace(/^([^:：]+)[:：]\s*/, '').trim();
+        if (value) currentEvent.why = value;
       } else if (/相关动态[:：]/.test(plain)) {
         const value = plain.replace(/^相关动态[:：]\s*/, '').trim();
         if (value) currentEvent.actions.push(value);
@@ -524,23 +545,25 @@ function markdownToStyledHtml(markdown) {
     .filter((t) => t.items.length > 0)
     .slice(0, 4);
 
-  const sectionTitle = (textValue) => `<h2 style="font-size:22px;line-height:1.3;margin:0 0 12px;color:#111827;font-weight:700;">${formatInlineMarkdown(textValue)}</h2>`;
+  const sectionTitle = (textValue) => `<h2 style="font-size:24px;line-height:1.35;margin:0 0 14px;color:#111827;font-weight:700;">${formatInlineMarkdown(textValue)}</h2>`;
 
   const renderSourceTags = (items) => {
     if (!items || items.length === 0) return '';
-    const tags = items.slice(0, 6).map((item) => `<span style="display:inline-block;margin:0 8px 8px 0;padding:4px 10px;border:1px solid #d1d5db;border-radius:999px;font-size:12px;line-height:1.4;color:#374151;">${formatInlineMarkdown(item)}</span>`).join('');
+    const tags = items.slice(0, 6).map((item) => `<span style="display:inline-block;margin:0 8px 8px 0;padding:6px 12px;border:1px solid #E5E7EB;border-radius:999px;background:#F8FAFC;font-size:12px;line-height:1.4;font-weight:500;color:#6B7280;">${formatInlineMarkdown(item)}</span>`).join('');
     return `<div style="margin-top:10px;">${tags}</div>`;
   };
 
   const renderEventCard = (event) => {
     const analysisText = event.analysis.join(' ').trim();
-    const actions = event.actions.slice(0, 5).map((a) => `<li style="margin:0 0 6px 0;color:#1f2937;font-size:14px;line-height:1.65;">${formatInlineMarkdown(a)}</li>`).join('');
+    const whyText = event.why || '对业务节奏、资源配置与外部竞争态势有直接影响。';
+    const actions = event.actions.slice(0, 5).map((a) => `<li style="margin:0 0 8px 0;color:#111827;font-size:16px;line-height:1.72;">${formatInlineMarkdown(a)}</li>`).join('');
     return `
-      <div style="margin:0 0 14px 0;padding:16px 18px;border:1px solid #e5e7eb;border-radius:10px;background:#ffffff;">
-        <div style="font-size:12px;color:#6b7280;font-weight:600;letter-spacing:0.3px;margin-bottom:6px;">HOT EVENT ${event.index}</div>
-        <div style="font-size:19px;line-height:1.45;color:#111827;font-weight:700;margin-bottom:10px;">${formatInlineMarkdown(event.title)}</div>
-        <div style="font-size:14px;line-height:1.7;color:#1f2937;margin-bottom:10px;">${formatInlineMarkdown(analysisText || '今日核心动态持续演进，建议关注执行节奏与信号变化。')}</div>
-        ${actions ? `<ul style="margin:0;padding-left:18px;">${actions}</ul>` : ''}
+      <div style="margin:0 0 16px 0;padding:18px 20px;border:1px solid #E5E7EB;border-radius:12px;background:#FFFFFF;box-shadow:0 2px 8px rgba(17,24,39,0.05);">
+        <div style="font-size:13px;color:#6B7280;font-weight:600;letter-spacing:0.3px;margin-bottom:8px;">HOT EVENT ${event.index}</div>
+        <div style="font-size:20px;line-height:1.45;color:#111827;font-weight:700;margin-bottom:10px;">${formatInlineMarkdown(event.title)}</div>
+        <div style="font-size:16px;line-height:1.75;color:#111827;margin-bottom:12px;"><span style="font-size:16px;font-weight:700;">热点解析：</span>${formatInlineMarkdown(analysisText || '今日核心动态持续演进，建议关注执行节奏与信号变化。')}</div>
+        <div style="margin:0 0 12px 0;padding:10px 12px;background:#F8FAFC;border-left:3px solid #2563EB;font-size:16px;line-height:1.72;color:#111827;"><span style="font-weight:700;">Why it matters：</span>${formatInlineMarkdown(whyText)}</div>
+        ${actions ? `<div style="font-size:16px;font-weight:700;color:#111827;margin:0 0 6px 0;">相关动态：</div><ul style="margin:0;padding-left:20px;">${actions}</ul>` : ''}
         ${renderSourceTags(event.sources)}
       </div>
     `;
@@ -549,10 +572,10 @@ function markdownToStyledHtml(markdown) {
   const renderTopicCard = (event, idx) => {
     const summary = (event.analysis.join(' ') || event.actions[0] || '该方向活跃度提升，建议持续跟踪。').trim();
     return `
-      <div style="margin:0 0 10px 0;padding:12px 14px;border:1px solid #e5e7eb;border-radius:8px;background:#fff;">
-        <div style="font-size:12px;color:#6b7280;font-weight:600;margin-bottom:5px;">TOPIC ${idx + 1}</div>
-        <div style="font-size:15px;line-height:1.55;color:#111827;font-weight:700;margin-bottom:6px;">${formatInlineMarkdown(event.title)}</div>
-        <div style="font-size:13px;line-height:1.6;color:#374151;">${formatInlineMarkdown(summary)}</div>
+      <div style="display:inline-block;vertical-align:top;width:48%;margin:0 1% 12px 1%;padding:14px 14px;border:1px solid #E5E7EB;border-radius:10px;background:#F8FAFC;box-sizing:border-box;">
+        <div style="font-size:13px;color:#6B7280;font-weight:600;margin-bottom:6px;">TOPIC ${idx + 1}</div>
+        <div style="font-size:20px;line-height:1.45;color:#111827;font-weight:700;margin-bottom:8px;">${formatInlineMarkdown(event.title)}</div>
+        <div style="font-size:16px;line-height:1.7;color:#4B5563;">${formatInlineMarkdown(summary)}</div>
       </div>
     `;
   };
@@ -562,33 +585,33 @@ function markdownToStyledHtml(markdown) {
     : `今日高热度集中在AI产品化推进与模型能力迭代，主要关注方向为Top 3热点与中热度主题演进，监测范围覆盖Top20 active AI voices in the last 24h，对管理层的意义在于优化资源投放效率并把握竞争窗口。`;
 
   return `
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f3f4f6;padding:24px 0;margin:0;">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#F5F7FA;padding:28px 0;margin:0;">
   <tr>
     <td align="center">
-      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="720" style="width:720px;max-width:720px;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="720" style="width:720px;max-width:720px;background:#FFFFFF;border:1px solid #E5E7EB;border-radius:12px;overflow:hidden;">
         <tr>
-          <td style="background:#111827;padding:22px 28px;">
-            <div style="font-size:30px;line-height:1.25;font-weight:700;color:#ffffff;">${formatInlineMarkdown(reportTitle)}</div>
+          <td style="background:#111827;padding:24px 28px;">
+            <div style="font-size:34px;line-height:1.25;font-weight:700;color:#ffffff;">${formatInlineMarkdown(reportTitle)}</div>
             <div style="margin-top:8px;font-size:13px;line-height:1.5;color:#d1d5db;">${today} · Auto-generated executive intelligence brief</div>
           </td>
         </tr>
         <tr>
-          <td style="padding:14px 24px 4px 24px;">
+          <td style="padding:16px 24px 6px 24px;">
             ${sectionTitle('Top 3 Hot Events')}
             ${top3.length > 0 ? top3.map(renderEventCard).join('') : '<div style="font-size:14px;color:#4b5563;padding:12px 0;">今日暂无可用热点事件。</div>'}
           </td>
         </tr>
         <tr>
-          <td style="padding:8px 24px 8px 24px;">
+          <td style="padding:10px 24px 10px 24px;">
             ${sectionTitle('Secondary Topics')}
             ${secondaryTopics.length > 0 ? secondaryTopics.map((topic, i) => `<div style=\"margin-bottom:12px;\"><div style=\"font-size:13px;color:#374151;font-weight:700;margin:0 0 6px 0;\">${i + 1}. ${formatInlineMarkdown(topic.title)}</div>${topic.items.slice(0, 4).map(renderTopicCard).join('')}</div>`).join('') : '<div style="font-size:13px;color:#6b7280;">今日中热度主题较少，建议持续观察明日信号。</div>'}
           </td>
         </tr>
         <tr>
-          <td style="padding:8px 24px 8px 24px;">
+          <td style="padding:10px 24px 10px 24px;">
             <div style="border:1px solid #d1d5db;border-left:4px solid #111827;border-radius:8px;background:#f9fafb;padding:14px 14px 12px 14px;">
               ${sectionTitle('Executive Summary')}
-              <div style="font-size:14px;line-height:1.75;color:#1f2937;">${formatInlineMarkdown(executiveSummary)}</div>
+              <div style="font-size:16px;line-height:1.75;color:#111827;">${formatInlineMarkdown(executiveSummary)}</div>
             </div>
           </td>
         </tr>
