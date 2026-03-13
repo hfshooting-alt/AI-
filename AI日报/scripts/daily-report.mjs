@@ -1,9 +1,9 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import nodemailer from 'nodemailer';
 
 const requiredEnv = [
   'APIFY_TOKEN',
-  'APIFY_ACTOR_ID',
   'OPENAI_API_KEY',
   'OPENAI_MODEL',
   'SMTP_HOST',
@@ -235,6 +235,8 @@ function rankPeople(items, roster) {
     if (!handle) continue;
     counts.set(handle, (counts.get(handle) || 0) + 1);
   }
+  return '其他AI动态';
+}
 
   const meta = new Map(roster.map((r) => [normalizeHandle(r.handle), { name: r.name || r.handle, title: r.title || '', description: r.description || '' }]));
   return Array.from(counts.entries())
