@@ -509,30 +509,35 @@ function markdownToStyledHtml(markdown) {
 
   const renderEventCard = (event) => {
     const analysisText = event.analysis.join(' ').trim();
-    const whyText = event.why || '对业务节奏、资源配置与外部竞争态势有直接影响。';
     const actions = event.actions.slice(0, 5).map((a) => `<li style="margin:0 0 8px 0;color:#111827;font-size:16px;line-height:1.72;">${formatInlineMarkdown(a)}</li>`).join('');
     return `
       <div style="margin:0 0 16px 0;padding:18px 20px;border:1px solid #E5E7EB;border-radius:12px;background:#FFFFFF;box-shadow:0 2px 8px rgba(17,24,39,0.05);">
         <div style="font-size:13px;color:#6B7280;font-weight:600;letter-spacing:0.3px;margin-bottom:8px;">HOT EVENT ${event.index}</div>
         <div style="font-size:20px;line-height:1.45;color:#111827;font-weight:700;margin-bottom:10px;">${formatInlineMarkdown(event.title)}</div>
         <div style="font-size:16px;line-height:1.75;color:#111827;margin-bottom:12px;"><span style="font-size:16px;font-weight:700;">热点解析：</span>${formatInlineMarkdown(analysisText || '今日核心动态持续演进，建议关注执行节奏与信号变化。')}</div>
-        <div style="margin:0 0 12px 0;padding:10px 12px;background:#F8FAFC;border-left:3px solid #2563EB;font-size:16px;line-height:1.72;color:#111827;"><span style="font-weight:700;">Why it matters：</span>${formatInlineMarkdown(whyText)}</div>
         ${actions ? `<div style="font-size:16px;font-weight:700;color:#111827;margin:0 0 6px 0;">相关动态：</div><ul style="margin:0;padding-left:20px;">${actions}</ul>` : ''}
         ${renderSourceTags(event.sources)}
       </div>
     `;
   };
 
-  const renderTopicCard = (event, idx) => {
-    const summary = (event.analysis.join(' ') || event.actions[0] || '该方向活跃度提升，建议持续跟踪。').trim();
+  const renderSecondaryTopicGroup = (topic, idx) => {
+    const topicItems = topic.items.slice(0, 4).map((event, j) => {
+      const dynamicText = event.actions[0] || event.analysis[0] || event.title;
+      return `<div style="margin:0 0 10px 0;padding:10px 12px;border:1px solid #E5E7EB;border-radius:8px;background:#FFFFFF;">
+        <div style="font-size:16px;font-weight:700;line-height:1.55;color:#111827;margin-bottom:4px;">动态${j + 1}：${formatInlineMarkdown(event.title)}</div>
+        <div style="font-size:16px;line-height:1.68;color:#4B5563;">${formatInlineMarkdown(dynamicText)}</div>
+      </div>`;
+    }).join('');
+
     return `
-      <div style="display:inline-block;vertical-align:top;width:48%;margin:0 1% 12px 1%;padding:14px 14px;border:1px solid #E5E7EB;border-radius:10px;background:#F8FAFC;box-sizing:border-box;">
-        <div style="font-size:13px;color:#6B7280;font-weight:600;margin-bottom:6px;">TOPIC ${idx + 1}</div>
-        <div style="font-size:20px;line-height:1.45;color:#111827;font-weight:700;margin-bottom:8px;">${formatInlineMarkdown(event.title)}</div>
-        <div style="font-size:16px;line-height:1.7;color:#4B5563;">${formatInlineMarkdown(summary)}</div>
+      <div style="display:inline-block;vertical-align:top;width:48%;margin:0 1% 14px 1%;padding:14px;border:1px solid #E5E7EB;border-radius:10px;background:#F8FAFC;box-sizing:border-box;">
+        <div style="font-size:20px;line-height:1.45;color:#111827;font-weight:700;margin-bottom:10px;">热点${idx + 1}：${formatInlineMarkdown(topic.title)}</div>
+        ${topicItems}
       </div>
     `;
   };
+
 
   const executiveSummary = summaryLines.length > 0
     ? summaryLines.map((t) => t.replace(/^[-•]\s*/, '').replace(/^[^：:]+[：:]\s*/, '')).join('；')
@@ -558,7 +563,7 @@ function markdownToStyledHtml(markdown) {
         <tr>
           <td style="padding:10px 24px 10px 24px;">
             ${sectionTitle('Secondary Topics')}
-            ${secondaryTopics.length > 0 ? secondaryTopics.map((topic, i) => `<div style=\"margin-bottom:12px;\"><div style=\"font-size:13px;color:#374151;font-weight:700;margin:0 0 6px 0;\">${i + 1}. ${formatInlineMarkdown(topic.title)}</div>${topic.items.slice(0, 4).map(renderTopicCard).join('')}</div>`).join('') : '<div style="font-size:13px;color:#6b7280;">今日中热度主题较少，建议持续观察明日信号。</div>'}
+            ${secondaryTopics.length > 0 ? secondaryTopics.map((topic, i) => renderSecondaryTopicGroup(topic, i)).join('') : '<div style=\"font-size:16px;color:#4B5563;line-height:1.7;\">今日中热度主题较少，建议持续观察明日信号。</div>'}
           </td>
         </tr>
         <tr>
