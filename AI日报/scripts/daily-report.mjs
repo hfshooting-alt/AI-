@@ -227,6 +227,8 @@ function isAiRelatedItem(item) {
     'llm', 'gpt', 'chatgpt', 'gemini', 'claude', 'llama', 'mistral', 'copilot',
     'artificial intelligence', 'machine learning', 'deep learning', 'neural network',
     'transformer', 'diffusion model', 'foundation model', 'large language model',
+    'grok', 'xai', 'deepseek', 'qwen', 'cursor', 'windsurf', 'devin', 'sora',
+    'stable diffusion', 'perplexity', 'cohere', 'inflection', 'character.ai',
   ];
 
   // English weak — common words that only indicate AI when combined with other signals
@@ -239,13 +241,13 @@ function isAiRelatedItem(item) {
   // Strong English: any single hit is enough
   if (enStrong.some((k) => new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text))) return true;
 
-  // Weak scoring: accumulate hits, threshold = 2
+  // Weak scoring: accumulate hits, threshold = 1
   let weakHits = 0;
   for (const k of cnWeak) { if (lower.includes(k)) weakHits += 1; }
   for (const k of enWeak) {
     if (new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text)) weakHits += 1;
   }
-  return weakHits >= 2;
+  return weakHits >= 1;
 }
 
 const HOTSPOT_RULES = [
