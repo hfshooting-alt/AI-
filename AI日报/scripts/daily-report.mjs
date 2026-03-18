@@ -251,11 +251,15 @@ function isAiRelatedItem(item) {
 }
 
 const HOTSPOT_RULES = [
-  { label: '模型与推理能力', enKws: ['model', 'llm', 'inference', 'gpt', 'gemini', 'claude'], cnKws: ['大模型', '推理'] },
-  { label: 'Agent与自动化', enKws: ['agent', 'workflow', 'automation'], cnKws: ['智能体', '自动化'] },
-  { label: '算力与芯片', enKws: ['nvidia', 'gpu', 'chip'], cnKws: ['算力', '芯片'] },
-  { label: '机器人与具身智能', enKws: ['robot', 'humanoid', 'optimus'], cnKws: ['机器人', '具身'] },
-  { label: '产品发布与商业化', enKws: ['launch', 'release', 'pricing', 'funding'], cnKws: ['融资', '发布', '定价'] },
+  { label: '模型与推理能力', enKws: ['model', 'llm', 'inference', 'gpt', 'gemini', 'claude', 'llama', 'mistral', 'reasoning', 'benchmark'], cnKws: ['大模型', '推理', '模型'] },
+  { label: 'Agent与自动化', enKws: ['agent', 'workflow', 'automation', 'mcp', 'tool use', 'function calling'], cnKws: ['智能体', '自动化', 'Agent'] },
+  { label: '算力与芯片', enKws: ['nvidia', 'gpu', 'chip', 'tpu', 'compute', 'hardware'], cnKws: ['算力', '芯片'] },
+  { label: '机器人与具身智能', enKws: ['robot', 'humanoid', 'optimus', 'embodied'], cnKws: ['机器人', '具身'] },
+  { label: '产品发布与商业化', enKws: ['launch', 'release', 'pricing', 'funding', 'startup', 'revenue', 'monetize'], cnKws: ['融资', '发布', '定价', '商业化', '上线'] },
+  { label: '开发工具与编程', enKws: ['coding', 'copilot', 'cursor', 'ide', 'vscode', 'developer', 'api', 'sdk', 'devtool'], cnKws: ['编程', '开发工具', '代码'] },
+  { label: '开源与社区', enKws: ['open source', 'opensource', 'github', 'huggingface', 'community', 'weights'], cnKws: ['开源', '社区', '权重'] },
+  { label: '多模态与视觉', enKws: ['multimodal', 'vision', 'image', 'video', 'diffusion', 'sora', 'text-to', 'ocr'], cnKws: ['多模态', '视觉', '图像', '视频'] },
+  { label: '安全与治理', enKws: ['safety', 'alignment', 'regulation', 'governance', 'policy', 'ethics', 'risk'], cnKws: ['安全', '对齐', '监管', '治理'] },
 ];
 
 function classifyHotspots(text) {
