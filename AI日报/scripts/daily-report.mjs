@@ -26,6 +26,20 @@ function optionalEnv(name) {
   return value && value.trim() ? value.trim() : undefined;
 }
 
+async function withRetry(fn, { retries = 3, baseDelayMs = 2000, label = 'operation' } = {}) {
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isRetryable = /ECONNRESET|ETIMEDOUT|ENOTFOUND|UND_ERR|fetch failed|AbortError|50[0-3]|429/i.test(err?.message || '');
+      if (attempt >= retries || !isRetryable) throw err;
+      const delay = baseDelayMs * (2 ** attempt);
+      console.warn(`${label} attempt ${attempt + 1} failed: ${err.message}. Retrying in ${delay}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 function normalizeActorId(rawActorId) {
   const actorId = rawActorId.trim();
   return actorId.includes('/') ? actorId.replace('/', '~') : actorId;
@@ -133,7 +147,7 @@ function buildApifyInput(templateInput, handles, since, until, maxItems = 1000) 
   };
 }
 
-async function fetchApifyDatasetItems({ token, actorId, input }) {
+async function fetchApifyDatasetItemsOnce({ token, actorId, input }) {
   const runPath = `https://api.apify.com/v2/acts/${encodeURIComponent(normalizeActorId(actorId))}/run-sync-get-dataset-items`;
   const runSyncUrl = new URL(runPath);
   runSyncUrl.searchParams.set('token', token);
@@ -167,6 +181,10 @@ async function fetchApifyDatasetItems({ token, actorId, input }) {
   return items;
 }
 
+async function fetchApifyDatasetItems(params) {
+  return withRetry(() => fetchApifyDatasetItemsOnce(params), { label: 'Apify fetch', retries: 3, baseDelayMs: 3000 });
+}
+
 function extractHandleFromItem(item) {
   const keys = [
     item?.author?.userName,
@@ -194,37 +212,64 @@ function extractTextFromItem(item) {
 function isAiRelatedItem(item) {
   const text = extractTextFromItem(item);
   if (!text) return false;
+  const lower = text.toLowerCase();
 
-  // Chinese keywords can use simple includes (no word-boundary issues)
-  const cnKws = ['人工智能', '大模型', '智能体', '推理', '算力', '芯片', '机器学习'];
-  if (cnKws.some((k) => text.includes(k))) return true;
+  // Chinese keywords — any single match is a strong signal
+  const cnStrong = ['人工智能', '大模型', '智能体', '机器学习', '深度学习', '神经网络'];
+  if (cnStrong.some((k) => lower.includes(k))) return true;
 
-  // English keywords need word-boundary matching to avoid false positives
-  // e.g. "ai" must not match "again", "model" must not match "remodel"
-  const enKws = [
-    'ai', 'artificial intelligence', 'llm', 'model', 'agent', 'openai', 'anthropic',
-    'gpt', 'gemini', 'claude', 'nvidia', 'robot', 'inference', 'training',
-    'machine learning', 'deep learning', 'neural network',
+  // Chinese weak — need context (e.g. "推理" alone could mean logical reasoning in non-AI context)
+  const cnWeak = ['推理', '算力', '芯片', '训练'];
+
+  // English strong — brand names / acronyms that unambiguously mean AI
+  const enStrong = [
+    'openai', 'anthropic', 'deepmind', 'midjourney', 'hugging face', 'huggingface',
+    'llm', 'gpt', 'chatgpt', 'gemini', 'claude', 'llama', 'mistral', 'copilot',
+    'artificial intelligence', 'machine learning', 'deep learning', 'neural network',
+    'transformer', 'diffusion model', 'foundation model', 'large language model',
   ];
-  return enKws.some((k) => new RegExp(`\\b${k}\\b`, 'i').test(text));
+
+  // English weak — common words that only indicate AI when combined with other signals
+  const enWeak = [
+    'ai', 'model', 'agent', 'training', 'inference', 'robot', 'nvidia',
+    'gpu', 'chip', 'fine-tune', 'finetune', 'benchmark', 'reasoning',
+    'embedding', 'token', 'prompt', 'rlhf', 'alignment',
+  ];
+
+  // Strong English: any single hit is enough
+  if (enStrong.some((k) => new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text))) return true;
+
+  // Weak scoring: accumulate hits, threshold = 2
+  let weakHits = 0;
+  for (const k of cnWeak) { if (lower.includes(k)) weakHits += 1; }
+  for (const k of enWeak) {
+    if (new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text)) weakHits += 1;
+  }
+  return weakHits >= 2;
 }
 
-function classifyHotspot(text) {
-  const rules = [
-    { label: '模型与推理能力', kws: ['model', 'llm', 'inference', 'gpt', 'gemini', 'claude', '大模型', '推理'] },
-    { label: 'Agent与自动化', kws: ['agent', 'workflow', 'automation', '智能体', '自动化'] },
-    { label: '算力与芯片', kws: ['nvidia', 'gpu', 'chip', '算力', '芯片'] },
-    { label: '机器人与具身智能', kws: ['robot', 'humanoid', 'optimus', '机器人', '具身'] },
-    { label: '产品发布与商业化', kws: ['launch', 'release', 'pricing', 'funding', '融资', '发布', '定价'] },
-  ];
+const HOTSPOT_RULES = [
+  { label: '模型与推理能力', enKws: ['model', 'llm', 'inference', 'gpt', 'gemini', 'claude'], cnKws: ['大模型', '推理'] },
+  { label: 'Agent与自动化', enKws: ['agent', 'workflow', 'automation'], cnKws: ['智能体', '自动化'] },
+  { label: '算力与芯片', enKws: ['nvidia', 'gpu', 'chip'], cnKws: ['算力', '芯片'] },
+  { label: '机器人与具身智能', enKws: ['robot', 'humanoid', 'optimus'], cnKws: ['机器人', '具身'] },
+  { label: '产品发布与商业化', enKws: ['launch', 'release', 'pricing', 'funding'], cnKws: ['融资', '发布', '定价'] },
+];
 
+function classifyHotspots(text) {
   const lower = String(text || '').toLowerCase();
-  for (const rule of rules) {
-    if (rule.kws.some((k) => lower.includes(k))) {
-      return rule.label;
-    }
-  }
-  return '其他AI动态';
+  const matched = HOTSPOT_RULES
+    .filter((rule) => {
+      if (rule.cnKws.some((k) => lower.includes(k))) return true;
+      return rule.enKws.some((k) => new RegExp(`\\b${k}\\b`).test(lower));
+    })
+    .map((rule) => rule.label);
+  return matched.length > 0 ? matched : ['其他AI动态'];
+}
+
+// Single-label wrapper for backwards compatibility where only one label is needed
+function classifyHotspot(text) {
+  return classifyHotspots(text)[0];
 }
 
 const getHotspotStats = (items) => {
@@ -232,20 +277,23 @@ const getHotspotStats = (items) => {
   const groupedSignals = new Set();
 
   for (const item of items) {
-    const label = classifyHotspot(extractTextFromItem(item));
+    const labels = classifyHotspots(extractTextFromItem(item));
     const handle = normalizeHandle(extractHandleFromItem(item)) || 'unknown';
     const threadKey = getItemThreadKey(item);
-    const signalKey = `${label}::${handle}::${threadKey}`;
 
-    if (!topicMap.has(label)) {
-      topicMap.set(label, { participants: new Set(), interactionGroups: new Set(), rawCount: 0 });
+    for (const label of labels) {
+      const signalKey = `${label}::${handle}::${threadKey}`;
+
+      if (!topicMap.has(label)) {
+        topicMap.set(label, { participants: new Set(), interactionGroups: new Set(), rawCount: 0 });
+      }
+      const topicEntry = topicMap.get(label);
+      topicEntry.rawCount += 1;
+      topicEntry.participants.add(handle);
+      topicEntry.interactionGroups.add(`${handle}::${threadKey}`);
+
+      groupedSignals.add(signalKey);
     }
-    const topicEntry = topicMap.get(label);
-    topicEntry.rawCount += 1;
-    topicEntry.participants.add(handle);
-    topicEntry.interactionGroups.add(`${handle}::${threadKey}`);
-
-    groupedSignals.add(signalKey);
   }
 
   const hotspots = Array.from(topicMap.entries())
@@ -300,10 +348,11 @@ function buildPromptItems(items) {
   const deduped = new Map();
 
   for (const item of items) {
-    const label = classifyHotspot(extractTextFromItem(item));
     const handle = normalizeHandle(extractHandleFromItem(item)) || 'unknown';
     const threadKey = getItemThreadKey(item);
-    const key = `${label}::${handle}::${threadKey}`;
+    // Deduplicate by person + thread regardless of label, since multi-label
+    // items would otherwise appear multiple times in the prompt
+    const key = `${handle}::${threadKey}`;
 
     if (!deduped.has(key)) deduped.set(key, item);
   }
@@ -361,7 +410,9 @@ function getDailyPeopleStats(items) {
     if (!stats.has(handle)) stats.set(handle, { actionCount: 0, hotspots: new Set() });
     const entry = stats.get(handle);
     entry.actionCount += 1;
-    entry.hotspots.add(classifyHotspot(extractTextFromItem(item)));
+    for (const label of classifyHotspots(extractTextFromItem(item))) {
+      entry.hotspots.add(label);
+    }
   }
   return stats;
 }
@@ -512,6 +563,8 @@ function markdownToStyledHtml(markdown) {
   const topSectionNotes = [];
   const appendixLines = [];
   let inAppendix = false;
+  // Track ## section headers from OpenAI output to preserve its topic grouping
+  let currentSectionTitle = '';
 
   for (const line of contentLines) {
     if (/^##\s*TOP20活跃人物/i.test(line)) {
@@ -528,10 +581,29 @@ function markdownToStyledHtml(markdown) {
       continue;
     }
 
+    // Detect ## section headers (e.g. "## 二、中热度话题" or "## Topic: Agent与自动化")
+    const sectionMatch = line.match(/^##\s+(.+)/);
+    if (sectionMatch) {
+      if (currentEvent) {
+        events.push(currentEvent);
+        currentEvent = null;
+      }
+      currentSectionTitle = sectionMatch[1].replace(/^[一二三四五六七八九十\d]+[、.．]\s*/, '').trim();
+      continue;
+    }
+
     const ordered = line.match(/^(\d+)\.\s+(.+)/);
     if (ordered) {
       if (currentEvent) events.push(currentEvent);
-      currentEvent = { index: Number(ordered[1]), title: ordered[2], analysis: [], why: '', actions: [], sources: [] };
+      currentEvent = {
+        index: Number(ordered[1]),
+        title: ordered[2],
+        analysis: [],
+        why: '',
+        actions: [],
+        sources: [],
+        sectionTitle: currentSectionTitle,
+      };
       continue;
     }
 
@@ -566,18 +638,12 @@ function markdownToStyledHtml(markdown) {
   const top3 = events.slice(0, 3);
   const secondary = events.slice(3);
 
-  const topicRules = [
-    { title: '模型与推理能力', kws: ['模型', '推理', 'gpt', 'claude', 'gemini', 'model', 'inference'] },
-    { title: 'Agent与自动化落地', kws: ['agent', '自动化', 'workflow', '编排'] },
-    { title: '产品发布与商业化', kws: ['发布', '商业化', '融资', 'pricing', 'launch', 'funding'] },
-    { title: '算力与基础设施', kws: ['gpu', '芯片', '算力', 'infra', 'nvidia'] },
-  ];
-
-  const grouped = new Map(topicRules.map((r) => [r.title, []]));
+  // Group secondary events by OpenAI's own ## section titles instead of re-classifying
+  const grouped = new Map();
   for (const evt of secondary) {
-    const hay = `${evt.title} ${evt.analysis.join(' ')}`.toLowerCase();
-    const hit = topicRules.find((r) => r.kws.some((k) => hay.includes(String(k).toLowerCase())));
-    grouped.get(hit ? hit.title : topicRules[2].title).push(evt);
+    const topic = evt.sectionTitle || '其他动态';
+    if (!grouped.has(topic)) grouped.set(topic, []);
+    grouped.get(topic).push(evt);
   }
   const secondaryTopics = Array.from(grouped.entries())
     .map(([title, items]) => ({ title, items }))
@@ -692,7 +758,7 @@ function getPromptTemplate() {
 `;
 }
 
-async function requestOpenAIReport({ apiKey, model, prompt }) {
+async function requestOpenAIReportOnce({ apiKey, model, prompt }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3 * 60 * 1000); // 3 minutes
   let response;
@@ -718,11 +784,45 @@ async function requestOpenAIReport({ apiKey, model, prompt }) {
   return text;
 }
 
+async function requestOpenAIReport(params) {
+  return withRetry(() => requestOpenAIReportOnce(params), { label: 'OpenAI report', retries: 2, baseDelayMs: 5000 });
+}
+
 async function runApify(input) {
   const token = normalizeApifyToken(requireEnv('APIFY_TOKEN'));
   const actorId = requireEnv('APIFY_ACTOR_ID');
   const items = await fetchApifyDatasetItems({ token, actorId, input });
   return { items, runData: { id: normalizeActorId(actorId), status: 'SUCCEEDED' }, datasetId: 'run-sync-output' };
+}
+
+// Split handles into batches and run Apify calls concurrently for faster fetching
+async function runApifyBatched(templateInput, handles, since, until, { batchSize = 25, concurrency = 3, maxItems = 1000 } = {}) {
+  const batches = [];
+  for (let i = 0; i < handles.length; i += batchSize) {
+    batches.push(handles.slice(i, i + batchSize));
+  }
+
+  const allItems = [];
+  // Process batches with limited concurrency
+  for (let i = 0; i < batches.length; i += concurrency) {
+    const chunk = batches.slice(i, i + concurrency);
+    const results = await Promise.all(
+      chunk.map((batchHandles) => {
+        const input = buildApifyInput(templateInput, batchHandles, since, until, maxItems);
+        return runApify(input).then((r) => r.items).catch((err) => {
+          console.error(`Apify batch failed (${batchHandles.length} handles): ${err.message}`);
+          return []; // Don't let one batch failure kill the whole run
+        });
+      }),
+    );
+    for (const items of results) allItems.push(...items);
+    if (i + concurrency < batches.length) {
+      console.log(`Apify batch progress: ${Math.min(i + concurrency, batches.length)}/${batches.length} batches done`);
+    }
+  }
+
+  console.log(`Apify batched fetch complete: ${batches.length} batches, ${allItems.length} total items`);
+  return allItems;
 }
 
 async function generateReport(items, top20, stats, peopleStats) {
@@ -735,7 +835,18 @@ async function generateReport(items, top20, stats, peopleStats) {
   console.log(`Using OPENAI_MODEL=${model}`);
 
   const promptItems = buildPromptItems(items);
-  const prompt = `${getPromptTemplate()}\n\n统计如下（用于事件重要性排序，核心看participantCount）：\n${JSON.stringify(stats, null, 2)}\n\n去重后的参与样本（同话题-同人-同线程仅保留1条）：\n${JSON.stringify(promptItems, null, 2)}`;
+  // Extract only the fields OpenAI needs to reduce token usage
+  const compactItems = promptItems.map((item) => {
+    const handle = extractHandleFromItem(item);
+    const text = extractTextFromItem(item);
+    const url = item?.url || item?.tweetUrl || item?.link || '';
+    const createdAt = item?.createdAt || item?.created_at || item?.date || '';
+    const compact = { handle, text: text.slice(0, 500) };
+    if (url) compact.url = url;
+    if (createdAt) compact.date = typeof createdAt === 'string' ? createdAt.slice(0, 19) : createdAt;
+    return compact;
+  });
+  const prompt = `${getPromptTemplate()}\n\n统计如下（用于事件重要性排序，核心看participantCount）：\n${JSON.stringify(stats, null, 2)}\n\n去重后的参与样本（同话题-同人-同线程仅保留1条，共${compactItems.length}条）：\n${JSON.stringify(compactItems, null, 2)}`;
   const markdown = await requestOpenAIReport({ apiKey, model, prompt });
   const normalized = normalizeMarkdownLayout(markdown);
   const withRealNameLinks = relabelSourceLinksWithRealNames(normalized, top20);
@@ -786,15 +897,19 @@ async function main() {
   const yesterday = formatBjtDateDaysAgo(1);
   const weekAgo = formatBjtDateDaysAgo(7);
 
-  const weeklyInput = buildApifyInput(templateInput, roster.map((p) => p.handle), weekAgo, today, 1000);
+  const rosterHandles = roster.map((p) => p.handle);
+  console.log(`Fetching weekly data for ${rosterHandles.length} people (${weekAgo} ~ ${today})...`);
   console.log(`Example weekly searchTerm: from:${roster[0].handle} since:${weekAgo} until:${today}`);
-  const weekly = await runApify(weeklyInput);
-  console.log(`Weekly items: ${weekly.items.length}`);
+  // Use batched concurrent calls for large roster to speed up fetching
+  const weeklyItems = rosterHandles.length > 30
+    ? await runApifyBatched(templateInput, rosterHandles, weekAgo, today)
+    : (await runApify(buildApifyInput(templateInput, rosterHandles, weekAgo, today, 1000))).items;
+  console.log(`Weekly items: ${weeklyItems.length}`);
 
   await fs.mkdir('artifacts', { recursive: true });
-  await fs.writeFile('artifacts/all-outputs.json', JSON.stringify(weekly.items, null, 2), 'utf8');
+  await fs.writeFile('artifacts/all-outputs.json', JSON.stringify(weeklyItems, null, 2), 'utf8');
 
-  const ranking = rankPeople(weekly.items, roster);
+  const ranking = rankPeople(weeklyItems, roster);
   const top20 = ranking.slice(0, 20);
   await fs.writeFile('artifacts/top20-ranking.json', JSON.stringify(top20, null, 2), 'utf8');
 
