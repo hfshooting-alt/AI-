@@ -366,8 +366,12 @@ function buildPromptItems(items) {
     if (!threadDeduped.has(key)) threadDeduped.set(key, item);
   }
 
-  // Pass 2: per person + topic dedup — keep the item with the longest text
-  const topicDeduped = new Map();
+  // Pass 2: per person + topic dedup — keep the top 3 longest items per person
+  // per topic category.  The old logic kept only 1 which discarded distinct events
+  // that happened to share a broad category (e.g. two different model launches both
+  // classified as "模型与推理能力").
+  const MAX_PER_PERSON_TOPIC = 3;
+  const topicBuckets = new Map();
   for (const item of threadDeduped.values()) {
     const handle = normalizeHandle(extractHandleFromItem(item)) || 'unknown';
     const text = extractTextFromItem(item);
@@ -375,12 +379,17 @@ function buildPromptItems(items) {
     const primaryLabel = labels[0] || 'other';
     const key = `${handle}::${primaryLabel}`;
 
-    if (!topicDeduped.has(key) || text.length > extractTextFromItem(topicDeduped.get(key)).length) {
-      topicDeduped.set(key, item);
-    }
+    if (!topicBuckets.has(key)) topicBuckets.set(key, []);
+    topicBuckets.get(key).push(item);
   }
 
-  return Array.from(topicDeduped.values());
+  const result = [];
+  for (const bucket of topicBuckets.values()) {
+    bucket.sort((a, b) => extractTextFromItem(b).length - extractTextFromItem(a).length);
+    result.push(...bucket.slice(0, MAX_PER_PERSON_TOPIC));
+  }
+
+  return result;
 }
 
 
@@ -518,13 +527,22 @@ function normalizeMarkdownLayout(markdown) {
     return true;
   });
 
-  // renumber all top-level ordered items sequentially
+  // Convert indented numbered items to dash items so they are not mistaken
+  // for top-level events after the parser trims all lines.
+  for (let i = 0; i < cleaned.length; i += 1) {
+    const indented = cleaned[i].match(/^(\s+)\d+\.\s+(.*)$/);
+    if (indented) {
+      cleaned[i] = `${indented[1]}- ${indented[2]}`;
+    }
+  }
+
+  // renumber only top-level (non-indented) ordered items sequentially
   let idx = 0;
   for (let i = 0; i < cleaned.length; i += 1) {
-    const m = cleaned[i].match(/^(\s*)\d+\.\s+(.*)$/);
+    const m = cleaned[i].match(/^(\d+)\.\s+(.*)$/);
     if (m) {
       idx += 1;
-      cleaned[i] = `${m[1]}${idx}. ${m[2]}`;
+      cleaned[i] = `${idx}. ${m[2]}`;
     }
   }
 
@@ -712,8 +730,25 @@ function markdownToStyledHtml(markdown) {
   }
   if (currentEvent) events.push(currentEvent);
 
-  const top3 = events.slice(0, 3);
-  const secondary = events.slice(3);
+  // Split events by section title: events under the TOP3 header go into top3,
+  // everything else goes into secondary.  This is more robust than a blind
+  // slice(0,3) which breaks whenever a phantom event shifts positions.
+  const top3 = [];
+  const secondary = [];
+  for (const evt of events) {
+    if (top3.length < 3 && /top\s*3|热度事件/i.test(evt.sectionTitle || '')) {
+      top3.push(evt);
+    } else {
+      secondary.push(evt);
+    }
+  }
+  // Fallback: if section-based split found no top3 (LLM didn't use expected header),
+  // fall back to positional slice.
+  if (top3.length === 0 && events.length > 0) {
+    top3.push(...events.slice(0, Math.min(3, events.length)));
+    secondary.length = 0;
+    secondary.push(...events.slice(top3.length));
+  }
 
   // Group secondary events by OpenAI's own ## section titles instead of re-classifying
   const grouped = new Map();
