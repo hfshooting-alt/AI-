@@ -251,11 +251,15 @@ function isAiRelatedItem(item) {
 }
 
 const HOTSPOT_RULES = [
-  { label: '模型与推理能力', enKws: ['model', 'llm', 'inference', 'gpt', 'gemini', 'claude'], cnKws: ['大模型', '推理'] },
-  { label: 'Agent与自动化', enKws: ['agent', 'workflow', 'automation'], cnKws: ['智能体', '自动化'] },
-  { label: '算力与芯片', enKws: ['nvidia', 'gpu', 'chip'], cnKws: ['算力', '芯片'] },
-  { label: '机器人与具身智能', enKws: ['robot', 'humanoid', 'optimus'], cnKws: ['机器人', '具身'] },
-  { label: '产品发布与商业化', enKws: ['launch', 'release', 'pricing', 'funding'], cnKws: ['融资', '发布', '定价'] },
+  { label: '模型与推理能力', enKws: ['model', 'llm', 'inference', 'gpt', 'gemini', 'claude', 'llama', 'mistral', 'reasoning', 'benchmark'], cnKws: ['大模型', '推理', '模型'] },
+  { label: 'Agent与自动化', enKws: ['agent', 'workflow', 'automation', 'mcp', 'tool use', 'function calling'], cnKws: ['智能体', '自动化', 'Agent'] },
+  { label: '算力与芯片', enKws: ['nvidia', 'gpu', 'chip', 'tpu', 'compute', 'hardware'], cnKws: ['算力', '芯片'] },
+  { label: '机器人与具身智能', enKws: ['robot', 'humanoid', 'optimus', 'embodied'], cnKws: ['机器人', '具身'] },
+  { label: '产品发布与商业化', enKws: ['launch', 'release', 'pricing', 'funding', 'startup', 'revenue', 'monetize'], cnKws: ['融资', '发布', '定价', '商业化', '上线'] },
+  { label: '开发工具与编程', enKws: ['coding', 'copilot', 'cursor', 'ide', 'vscode', 'developer', 'api', 'sdk', 'devtool'], cnKws: ['编程', '开发工具', '代码'] },
+  { label: '开源与社区', enKws: ['open source', 'opensource', 'github', 'huggingface', 'community', 'weights'], cnKws: ['开源', '社区', '权重'] },
+  { label: '多模态与视觉', enKws: ['multimodal', 'vision', 'image', 'video', 'diffusion', 'sora', 'text-to', 'ocr'], cnKws: ['多模态', '视觉', '图像', '视频'] },
+  { label: '安全与治理', enKws: ['safety', 'alignment', 'regulation', 'governance', 'policy', 'ethics', 'risk'], cnKws: ['安全', '对齐', '监管', '治理'] },
 ];
 
 function classifyHotspots(text) {
@@ -624,11 +628,13 @@ function markdownToStyledHtml(markdown) {
     }
 
     const ordered = line.match(/^(\d+)\.\s+(.+)/);
-    if (ordered) {
+    // Also match bold standalone titles like "**事件标题**" (LLM sometimes uses this instead of numbered lists)
+    const boldTitle = !ordered && line.match(/^\*\*([^*]+)\*\*\s*$/);
+    if (ordered || boldTitle) {
       if (currentEvent) events.push(currentEvent);
       currentEvent = {
-        index: Number(ordered[1]),
-        title: ordered[2],
+        index: ordered ? Number(ordered[1]) : events.length + 1,
+        title: ordered ? ordered[2] : boldTitle[1],
         analysis: [],
         why: '',
         actions: [],
@@ -664,6 +670,9 @@ function markdownToStyledHtml(markdown) {
     if (currentEvent) {
       const normalized = line.replace(/^[○■*-]\s+/, '').trim();
       const plain = normalized.replace(/\*\*/g, '').trim();
+
+      // Skip participant count lines (e.g. "参与人数：4人", "*参与人数：4人*")
+      if (/参与人数|participantCount/i.test(plain)) continue;
 
       if (/热点解析[:：]/.test(plain)) {
         const value = plain.replace(/^热点解析[:：]\s*/, '').trim();
@@ -809,19 +818,56 @@ function getPromptTemplate() {
 - 同一个人发多条推文/引用/回复，只算1个参与者
 - 统计数据中的 participants 数组列出了每个话题的所有唯一参与者，请严格按此排序
 - 仅在参与人数完全相同时，再参考 interactionGroupCount 和 count
+- **输出中不要显示参与人数、participantCount 等统计数字，只用于排序**
 
-## 输出要求
-1) 先输出TOP3热度事件（严格按 participantCount 排序，数据中已按此排好序）
-2) 再输出7-12条中热度事件，按2-4个Topic组织（Topic标题不要出现”聚类”二字）
-3) 不需要按传统行业大类分类
-4) 每个事件统一结构：
-   - ○ **热点解析：** [事件抽象总结]
-   - ○ **相关动态：** [参与者动态，分点列出]
-5) **关键约束：同一事件内，每个账号（@handle）最多只能出现1次。** 数据已按每人每话题去重，每条数据代表一个不同的人的观点，请全部使用，不要重复引用同一人
-6) 不要输出”聚类一/二/三”字样；不要输出”额外观察”与”AI大厂与投资机构资讯”板块
-7) 关联动态中的来源链接，不使用”查看原帖”，统一写成 [@本名](url)（本名不是X用户名）
-8) 文末新增 Today's Summary 板块，用一个自然段完成（不分点，不超过200字）
-9) 输出Markdown，结构清晰，分级列表明确
+## 输出格式（严格遵守）
+
+### TOP3热度事件
+用 ## 标题 + 编号列表输出，严格按 participantCount 排序（数据中已排好序）：
+
+\`\`\`
+## TOP3 热度事件
+
+1. 事件标题A
+   - **热点解析：** …
+   - **相关动态：**
+     - [@本名](url): 动态描述…
+     - [@本名](url): 动态描述…
+
+2. 事件标题B
+   …
+
+3. 事件标题C
+   …
+\`\`\`
+
+### 中热度事件
+用 ### 作为Topic标题，每个Topic下用编号列表输出事件，共输出7-12条事件，分成2-4个Topic：
+
+\`\`\`
+## 中热度话题
+
+### Topic标题A
+1. 事件标题X
+   - **热点解析：** …
+   - **相关动态：**
+     - [@本名](url): 动态描述…
+
+2. 事件标题Y
+   …
+
+### Topic标题B
+1. 事件标题Z
+   …
+\`\`\`
+
+### 通用规则
+- 不需要按传统行业大类分类
+- **关键约束：同一事件内，每个账号（@handle）最多只能出现1次。** 数据已按每人每话题去重，每条数据代表一个不同的人的观点，请全部使用，不要重复引用同一人
+- 不要输出”聚类一/二/三”字样；不要输出”额外观察”与”AI大厂与投资机构资讯”板块
+- 关联动态中的来源链接，不使用”查看原帖”，统一写成 [@本名](url)（本名不是X用户名）
+- 文末新增 Today's Summary 板块，用一个自然段完成（不分点，不超过200字）
+- 输出Markdown，结构清晰，分级列表明确
 `;
 }
 
