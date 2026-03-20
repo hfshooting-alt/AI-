@@ -575,7 +575,7 @@ function normalizeMarkdownLayout(markdown) {
   text = stripSourcelessDynamic(text);
 
   if (!/##\s*Today's Summary/i.test(text)) {
-    console.warn('Warning: OpenAI output missing "Today\'s Summary" section, appending generic fallback.');
+    console.warn('Warning: Gemini output missing "Today\'s Summary" section, appending generic fallback.');
     text += "\n\n## Today's Summary\n\n今日高热度集中在AI能力落地与产品化推进，头部公司密集发布与资本动作叠加放大了市场关注，建议管理层优先布局组织级部署、成本治理与执行效率。";
   }
 
@@ -679,7 +679,7 @@ function markdownToStyledHtml(markdown) {
   const topSectionNotes = [];
   const appendixLines = [];
   let inAppendix = false;
-  // Track ## section headers from OpenAI output to preserve its topic grouping
+  // Track ## section headers from Gemini output to preserve its topic grouping
   let currentSectionTitle = '';
 
   for (const line of contentLines) {
@@ -709,7 +709,7 @@ function markdownToStyledHtml(markdown) {
     }
 
     // Detect ### sub-section headers (e.g. "### 开发工具与Agent工作流优化")
-    // OpenAI sometimes uses ### for mid-heat topic groups under a ## parent section
+    // Gemini sometimes uses ### for mid-heat topic groups under a ## parent section
     const h3Match = line.match(/^###\s+(.+)/);
     if (h3Match) {
       if (currentEvent) {
@@ -828,7 +828,7 @@ function markdownToStyledHtml(markdown) {
     secondary.push(...events.slice(top3.length));
   }
 
-  // Group secondary events by OpenAI's own ## section titles instead of re-classifying
+  // Group secondary events by Gemini's own ## section titles instead of re-classifying
   const grouped = new Map();
   for (const evt of secondary) {
     const topic = evt.sectionTitle || '其他动态';
@@ -1036,7 +1036,7 @@ async function requestGeminiReportOnce({ apiKey, model, prompt }) {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: Number(process.env.GEMINI_TEMPERATURE || 0.2),
-          maxOutputTokens: 65536,
+          maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 65536),
         },
       }),
       signal: controller.signal,
@@ -1051,7 +1051,7 @@ async function requestGeminiReportOnce({ apiKey, model, prompt }) {
   // Check if output was truncated due to token limit
   const finishReason = json?.candidates?.[0]?.finishReason;
   if (finishReason === 'MAX_TOKENS') {
-    console.warn('WARNING: Gemini output was truncated due to maxOutputTokens limit. Report may be incomplete.');
+    console.error('ERROR: Gemini output was truncated due to maxOutputTokens limit. Report is incomplete. Consider increasing GEMINI_MAX_OUTPUT_TOKENS.');
   } else if (finishReason === 'SAFETY') {
     console.warn('WARNING: Gemini output was blocked or truncated due to safety filters.');
   }
