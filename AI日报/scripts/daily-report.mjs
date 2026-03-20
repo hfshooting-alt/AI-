@@ -1025,8 +1025,21 @@ function getPromptTemplate() {
 
 async function requestGeminiReportOnce({ apiKey, model, prompt }) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3 * 60 * 1000); // 3 minutes
+  const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000); // 5 minutes (Gemini 3 thinking + large output needs more time)
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+  // Gemini 3.x recommends temperature=1.0; lower values (e.g. 0.2) may cause
+  // looping or degraded output. Keep 1.0 as default for gemini-3 compatibility.
+  const generationConfig = {
+    temperature: Number(process.env.GEMINI_TEMPERATURE || 1.0),
+    maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 65536),
+  };
+
+  // Gemini 3.x supports thinking_level (minimal/low/medium/high).
+  // Set GEMINI_THINKING_LEVEL to control reasoning depth; omit to use model default.
+  const thinkingLevel = process.env.GEMINI_THINKING_LEVEL;
+  const thinkingConfig = thinkingLevel ? { thinkingConfig: { thinkingLevel: thinkingLevel.toUpperCase() } } : {};
+
   let response;
   try {
     response = await fetch(url, {
@@ -1034,10 +1047,8 @@ async function requestGeminiReportOnce({ apiKey, model, prompt }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: Number(process.env.GEMINI_TEMPERATURE || 0.2),
-          maxOutputTokens: Number(process.env.GEMINI_MAX_OUTPUT_TOKENS || 65536),
-        },
+        generationConfig,
+        ...thinkingConfig,
       }),
       signal: controller.signal,
     });
@@ -1056,8 +1067,9 @@ async function requestGeminiReportOnce({ apiKey, model, prompt }) {
     console.warn('WARNING: Gemini output was blocked or truncated due to safety filters.');
   }
 
+  // Extract text parts, skipping thinking parts (Gemini 3 returns thought: true on internal reasoning)
   const text = (json?.candidates || [])
-    .flatMap((c) => (c?.content?.parts || []).map((p) => p?.text).filter(Boolean))
+    .flatMap((c) => (c?.content?.parts || []).filter((p) => !p?.thought).map((p) => p?.text).filter(Boolean))
     .join('\n')
     .trim();
 
