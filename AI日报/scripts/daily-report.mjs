@@ -411,7 +411,7 @@ function buildPromptItems(items) {
 
 
 // Analyze mutual interactions among a set of handles.
-// Returns a Map: handle → { repliedTo: Set, quotedBy: Set, mentionedBy: Set, interactionScore: number }
+// Returns a Map: handle → { repliedTo: Set, quoted: Set, mentioned: Set, quotedBy: Set, mentionedBy: Set }
 function analyzeInteractions(items, handleSet) {
   // Map each tweet ID to its author handle for cross-referencing
   const tweetAuthor = new Map();
@@ -423,7 +423,7 @@ function analyzeInteractions(items, handleSet) {
 
   const interactions = new Map();
   const ensureEntry = (h) => {
-    if (!interactions.has(h)) interactions.set(h, { repliedTo: new Set(), quotedBy: new Set(), mentionedBy: new Set() });
+    if (!interactions.has(h)) interactions.set(h, { repliedTo: new Set(), quoted: new Set(), mentioned: new Set(), quotedBy: new Set(), mentionedBy: new Set() });
     return interactions.get(h);
   };
 
@@ -431,7 +431,7 @@ function analyzeInteractions(items, handleSet) {
     const author = extractHandleFromItem(item);
     if (!author || !handleSet.has(author)) continue;
 
-    // Check reply: if this tweet replies to someone in our set
+    // Reply: author replied to target's tweet
     const replyTo = String(item?.inReplyToStatusId || item?.inReplyToStatusIdStr || '').trim();
     if (replyTo && tweetAuthor.has(replyTo)) {
       const target = tweetAuthor.get(replyTo);
@@ -441,24 +441,24 @@ function analyzeInteractions(items, handleSet) {
       }
     }
 
-    // Check quote tweet
+    // Quote: author quoted target's tweet (distinct from reply)
     const quoteOf = String(item?.quotedStatusId || item?.quotedStatusIdStr || '').trim();
     if (quoteOf && tweetAuthor.has(quoteOf)) {
       const target = tweetAuthor.get(quoteOf);
       if (target !== author && handleSet.has(target)) {
-        ensureEntry(author).repliedTo.add(target);
+        ensureEntry(author).quoted.add(target);
         ensureEntry(target).quotedBy.add(author);
       }
     }
 
-    // Check @mentions in text
+    // @mention: author mentioned target in text
     const text = extractTextFromItem(item);
     const mentions = text.match(/@(\w+)/g) || [];
     for (const m of mentions) {
-      const mentioned = normalizeHandle(m);
-      if (mentioned !== author && handleSet.has(mentioned)) {
-        ensureEntry(author).repliedTo.add(mentioned);
-        ensureEntry(mentioned).mentionedBy.add(author);
+      const mentionedHandle = normalizeHandle(m);
+      if (mentionedHandle !== author && handleSet.has(mentionedHandle)) {
+        ensureEntry(author).mentioned.add(mentionedHandle);
+        ensureEntry(mentionedHandle).mentionedBy.add(author);
       }
     }
   }
@@ -484,8 +484,13 @@ const rankPeople = (items, roster) => {
   const ranked = Array.from(counts.entries())
     .map(([handle, outputCount]) => {
       const inter = interactions.get(handle);
-      const peersEngaged = inter ? new Set([...inter.repliedTo, ...inter.quotedBy, ...inter.mentionedBy]).size : 0;
-      const interactionScore = inter ? (inter.repliedTo.size + inter.quotedBy.size * 1.2 + inter.mentionedBy.size * 0.8) : 0;
+      // Unique peers this person interacted with (in any direction)
+      const peersEngaged = inter ? new Set([...inter.repliedTo, ...inter.quoted, ...inter.mentioned, ...inter.quotedBy, ...inter.mentionedBy]).size : 0;
+      // Weighted score: active engagement (reply/quote/mention) counts more than passive (being quoted/mentioned)
+      const interactionScore = inter
+        ? (inter.repliedTo.size * 1.0 + inter.quoted.size * 1.2 + inter.mentioned.size * 0.5
+           + inter.quotedBy.size * 1.5 + inter.mentionedBy.size * 0.8)
+        : 0;
       // Final score: 60% output volume (normalized) + 40% interaction richness
       // Both components are on similar scales after normalization (done in sort)
       const compositeScore = outputCount + interactionScore * 2;
