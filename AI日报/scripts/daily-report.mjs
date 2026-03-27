@@ -185,6 +185,127 @@ async function fetchApifyDatasetItems(params) {
   return withRetry(() => fetchApifyDatasetItemsOnce(params), { label: 'Apify fetch', retries: 3, baseDelayMs: 3000 });
 }
 
+async function fetchJsonWithRetry(url, { label, timeoutMs = 60_000 } = {}) {
+  return withRetry(async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`${label || 'request'} failed: ${response.status} ${text.slice(0, 500)}`);
+      return text ? JSON.parse(text) : {};
+    } finally {
+      clearTimeout(timeout);
+    }
+  }, { label: label || 'HTTP JSON fetch', retries: 2, baseDelayMs: 2000 });
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v)).join(',')}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+}
+
+function normalizeApifyInputForFingerprint(input) {
+  const clone = input && typeof input === 'object' ? { ...input } : {};
+  // searchTerms order shouldn't affect cache hit
+  if (Array.isArray(clone.searchTerms)) {
+    clone.searchTerms = clone.searchTerms.map((v) => String(v).trim()).filter(Boolean).sort();
+  }
+  return clone;
+}
+
+function getInputFingerprint(input) {
+  return stableStringify(normalizeApifyInputForFingerprint(input));
+}
+
+async function fetchRunInput({ token, runId }) {
+  const url = new URL(`https://api.apify.com/v2/actor-runs/${encodeURIComponent(runId)}/key-value-store/records/INPUT`);
+  url.searchParams.set('token', token);
+  return fetchJsonWithRetry(url, { label: `Apify run INPUT ${runId}` });
+}
+
+async function fetchDatasetItemsById({ token, datasetId }) {
+  const url = new URL(`https://api.apify.com/v2/datasets/${encodeURIComponent(datasetId)}/items`);
+  url.searchParams.set('token', token);
+  url.searchParams.set('clean', 'true');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10 * 60 * 1000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    const body = await response.text();
+    if (!response.ok) throw new Error(`Dataset items fetch failed: ${response.status} ${body.slice(0, 500)}`);
+    const parsed = JSON.parse(body);
+    if (!Array.isArray(parsed)) throw new Error('Dataset items response is not an array.');
+    return parsed;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function listRecentActorRuns({ token, actorId, limit = 10 }) {
+  const runsUrl = new URL(`https://api.apify.com/v2/acts/${encodeURIComponent(normalizeActorId(actorId))}/runs`);
+  runsUrl.searchParams.set('token', token);
+  runsUrl.searchParams.set('limit', String(limit));
+  runsUrl.searchParams.set('desc', '1');
+  runsUrl.searchParams.set('status', 'SUCCEEDED');
+  const data = await fetchJsonWithRetry(runsUrl, { label: 'Apify recent runs list' });
+  return Array.isArray(data?.data?.items) ? data.data.items : [];
+}
+
+function shouldReuseRecentRuns() {
+  return parseBooleanEnv(process.env.APIFY_REUSE_RECENT_RUNS, true);
+}
+
+function getRecentRunsLimit() {
+  const v = Number(process.env.APIFY_REUSE_RUNS_LIMIT || 10);
+  return Number.isFinite(v) && v > 0 ? Math.min(Math.floor(v), 50) : 10;
+}
+
+function getReuseMaxAgeHours() {
+  const v = Number(process.env.APIFY_REUSE_MAX_AGE_HOURS || 36);
+  return Number.isFinite(v) && v > 0 ? Math.min(v, 24 * 14) : 36;
+}
+
+function isRunFreshEnough(run, maxAgeHours) {
+  const startedAt = run?.startedAt || run?.started_at || run?.createdAt || run?.created_at;
+  if (!startedAt) return false;
+  const startedAtMs = new Date(startedAt).getTime();
+  if (!Number.isFinite(startedAtMs)) return false;
+  const ageMs = Date.now() - startedAtMs;
+  return ageMs >= 0 && ageMs <= maxAgeHours * 60 * 60 * 1000;
+}
+
+const inProcessApifyCache = new Map();
+
+async function tryReuseRecentRun({ token, actorId, input }) {
+  if (!shouldReuseRecentRuns()) return null;
+  const limit = getRecentRunsLimit();
+  const maxAgeHours = getReuseMaxAgeHours();
+  const expectedFingerprint = getInputFingerprint(input);
+  const recentRuns = await listRecentActorRuns({ token, actorId, limit });
+  if (recentRuns.length === 0) return null;
+
+  for (const run of recentRuns) {
+    const runId = String(run?.id || '').trim();
+    const datasetId = String(run?.defaultDatasetId || run?.defaultDataset || run?.datasetId || '').trim();
+    if (!runId || !datasetId) continue;
+    if (!isRunFreshEnough(run, maxAgeHours)) continue;
+    try {
+      const runInput = await fetchRunInput({ token, runId });
+      const fingerprint = getInputFingerprint(runInput);
+      if (fingerprint !== expectedFingerprint) continue;
+      const items = await fetchDatasetItemsById({ token, datasetId });
+      console.log(`Apify cache hit: reused run ${runId} (dataset ${datasetId}, items=${items.length})`);
+      return { items, runData: run, datasetId, reused: true };
+    } catch (err) {
+      console.warn(`Apify reuse candidate skipped (${runId}): ${err.message}`);
+    }
+  }
+  return null;
+}
+
 function extractHandleFromItem(item) {
   const keys = [
     item?.author?.userName,
@@ -1273,8 +1394,32 @@ async function requestGeminiReport(params) {
 async function runApify(input) {
   const token = normalizeApifyToken(requireEnv('APIFY_TOKEN'));
   const actorId = requireEnv('APIFY_ACTOR_ID');
+  const fingerprint = getInputFingerprint(input);
+  const cacheMeta = {
+    reuseEnabled: shouldReuseRecentRuns(),
+    reuseLimit: getRecentRunsLimit(),
+    reuseMaxAgeHours: getReuseMaxAgeHours(),
+  };
+
+  if (inProcessApifyCache.has(fingerprint)) {
+    const cached = inProcessApifyCache.get(fingerprint);
+    console.log(`Apify in-process cache hit: items=${cached.items.length}`);
+    return { ...cached, reused: true };
+  }
+
+  if (cacheMeta.reuseEnabled) {
+    console.log(`Apify reuse check enabled (limit=${cacheMeta.reuseLimit}, maxAgeHours=${cacheMeta.reuseMaxAgeHours})`);
+  }
+  const reused = await tryReuseRecentRun({ token, actorId, input });
+  if (reused) {
+    inProcessApifyCache.set(fingerprint, reused);
+    return reused;
+  }
+
   const items = await fetchApifyDatasetItems({ token, actorId, input });
-  return { items, runData: { id: normalizeActorId(actorId), status: 'SUCCEEDED' }, datasetId: 'run-sync-output' };
+  const fresh = { items, runData: { id: normalizeActorId(actorId), status: 'SUCCEEDED' }, datasetId: 'run-sync-output', reused: false };
+  inProcessApifyCache.set(fingerprint, fresh);
+  return fresh;
 }
 
 // Split handles into batches and run Apify calls concurrently for faster fetching
