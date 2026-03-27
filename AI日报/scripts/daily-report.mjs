@@ -829,6 +829,7 @@ function markdownToStyledHtml(markdown) {
 
   const events = [];
   let currentEvent = null;
+  let inRelatedDynamicBlock = false;
   const topSectionNotes = [];
   const appendixLines = [];
   let inAppendix = false;
@@ -840,6 +841,7 @@ function markdownToStyledHtml(markdown) {
       if (currentEvent) {
         events.push(currentEvent);
         currentEvent = null;
+        inRelatedDynamicBlock = false;
       }
       inAppendix = true;
       continue;
@@ -856,6 +858,7 @@ function markdownToStyledHtml(markdown) {
       if (currentEvent) {
         events.push(currentEvent);
         currentEvent = null;
+        inRelatedDynamicBlock = false;
       }
       currentSectionTitle = sectionMatch[1].replace(/^[一二三四五六七八九十\d]+[、.．]\s*/, '').trim();
       continue;
@@ -868,6 +871,7 @@ function markdownToStyledHtml(markdown) {
       if (currentEvent) {
         events.push(currentEvent);
         currentEvent = null;
+        inRelatedDynamicBlock = false;
       }
       currentSectionTitle = h3Match[1].replace(/^[一二三四五六七八九十\d]+[、.．]\s*/, '').trim();
       continue;
@@ -876,14 +880,20 @@ function markdownToStyledHtml(markdown) {
     const ordered = line.match(/^(\d+)\.\s+(.+)/);
     // Also match bold standalone titles like "**事件标题**" (LLM sometimes uses this instead of numbered lists)
     const boldTitle = !ordered && line.match(/^\*\*([^*]+)\*\*\s*$/);
+    const dynamicNumberedLine = /^\d+[.)、]\s+\[@[^\]]+\]\(https?:\/\/[^)]+\)/.test(line.trim());
     if (ordered || boldTitle) {
+      if (currentEvent && inRelatedDynamicBlock && dynamicNumberedLine) {
+        // Numbered dynamics under "相关动态" should stay as action lines,
+        // not be mistaken for a new top-level event title.
+      } else {
       const candidateTitle = ordered ? ordered[2] : boldTitle[1];
       // If this numbered item is actually "Today's Summary" / "今日总结", treat it as
       // the start of the summary section rather than an event item.
       if (/today'?s\s*summary|今日总结|executive\s*summary/i.test(candidateTitle)) {
-        if (currentEvent) { events.push(currentEvent); currentEvent = null; }
-        // Collect remaining lines as summary until end or next ## section
-        let k = contentLines.indexOf(line) + 1;
+          if (currentEvent) { events.push(currentEvent); currentEvent = null; }
+          inRelatedDynamicBlock = false;
+          // Collect remaining lines as summary until end or next ## section
+          let k = contentLines.indexOf(line) + 1;
         while (k < contentLines.length && !/^##\s+/.test(contentLines[k])) {
           const sl = contentLines[k].replace(/^[○■*-]\s+/, '').trim();
           if (sl) summaryLines.push(sl);
@@ -892,6 +902,7 @@ function markdownToStyledHtml(markdown) {
         break; // stop main loop; everything after is summary/appendix
       }
       if (currentEvent) events.push(currentEvent);
+      inRelatedDynamicBlock = false;
       currentEvent = {
         index: ordered ? Number(ordered[1]) : events.length + 1,
         title: candidateTitle,
@@ -902,6 +913,7 @@ function markdownToStyledHtml(markdown) {
         sectionTitle: currentSectionTitle,
       };
       continue;
+      }
     }
 
     // If no current event but we have a section title and content, auto-create an
@@ -935,14 +947,37 @@ function markdownToStyledHtml(markdown) {
       if (/参与人数|participantCount/i.test(plain)) continue;
 
       if (/热点解析[:：]/.test(plain)) {
+        inRelatedDynamicBlock = false;
         const value = plain.replace(/^热点解析[:：]\s*/, '').trim();
         if (value) currentEvent.analysis.push(value);
       } else if (/why it matters|管理层意义|业务影响|重要性/i.test(plain)) {
+        inRelatedDynamicBlock = false;
         const value = plain.replace(/^([^:：]+)[:：]\s*/, '').trim();
         if (value) currentEvent.why = value;
       } else if (/相关动态[:：]/.test(plain)) {
+        inRelatedDynamicBlock = true;
         const value = plain.replace(/^相关动态[:：]\s*/, '').trim();
         if (value) currentEvent.actions.push(value);
+      } else if (inRelatedDynamicBlock) {
+        // Accept richer dynamic list formats:
+        // - [@Name](url): ...
+        // 1. [@Name](url) ...
+        // 1) [@Name](url)：...
+        // [@Name](url) ...
+        const actionCandidate = plain
+          .replace(/^[-•*]\s+/, '')
+          .replace(/^\d+[.)、]\s+/, '')
+          .trim();
+        if (/^\[@[^\]]+\]\(https?:\/\/[^)]+\)/.test(actionCandidate)) {
+          currentEvent.actions.push(actionCandidate);
+          continue;
+        }
+        if (actionCandidate && /https?:\/\//.test(actionCandidate)) {
+          currentEvent.actions.push(actionCandidate);
+          continue;
+        }
+        // A non-link narrative line means we likely left the dynamic block.
+        inRelatedDynamicBlock = false;
       } else if (/^\[@[^\]]+\]\(https?:\/\/[^)]+\)\s*[:：]/.test(plain)) {
         // Dynamic entry with source link — treat as action content, not a bare source
         currentEvent.actions.push(plain);
@@ -960,6 +995,7 @@ function markdownToStyledHtml(markdown) {
     }
   }
   if (currentEvent) events.push(currentEvent);
+  inRelatedDynamicBlock = false;
 
   // Split events by section title: events under the TOP3 header go into top3,
   // everything else goes into secondary.  This is more robust than a blind
