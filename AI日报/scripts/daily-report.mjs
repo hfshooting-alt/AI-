@@ -1630,6 +1630,19 @@ function buildFallbackReportFromItems(items, top20) {
   const sortedTopics = Array.from(topicBuckets.entries())
     .sort((a, b) => b[1].length - a[1].length);
 
+  const eventCandidates = [];
+  for (const [topic, entries] of sortedTopics) {
+    // Split each topic into chunks so one hot topic can still generate multiple events.
+    const chunkSize = 4;
+    for (let i = 0; i < entries.length; i += chunkSize) {
+      const chunk = entries.slice(i, i + chunkSize);
+      if (chunk.length === 0) continue;
+      const suffix = i === 0 ? '' : `（扩展${Math.floor(i / chunkSize) + 1}）`;
+      eventCandidates.push({ topic, title: `${topic}${suffix}`, entries: chunk, weight: chunk.length });
+    }
+  }
+  eventCandidates.sort((a, b) => b.weight - a.weight);
+
   const buildEventBlock = (topic, entries, index) => {
     const dynamics = entries
       .slice(0, 4)
@@ -1641,11 +1654,29 @@ function buildFallbackReportFromItems(items, top20) {
 ${dynamics}`;
   };
 
-  const top3Sections = sortedTopics.slice(0, 3).map(([topic, entries], i) => buildEventBlock(topic, entries, i + 1)).join('\n\n');
-  const secondaryTopics = sortedTopics.slice(3, 7);
-  const secondarySections = secondaryTopics.map(([topic, entries], i) => (
-    `### ${topic}\n\n${buildEventBlock(`${topic} 进展`, entries, i + 1)}`
-  )).join('\n\n');
+  const allEntries = sortedTopics.flatMap(([, entries]) => entries);
+  while (eventCandidates.length < 7 && allEntries.length > 0) {
+    const i = eventCandidates.length;
+    const slice = allEntries.slice((i * 3) % allEntries.length, ((i * 3) % allEntries.length) + 3);
+    const fallbackEntries = slice.length > 0 ? slice : allEntries.slice(0, 3);
+    eventCandidates.push({
+      topic: '其他AI动态',
+      title: `补充信号${i + 1}`,
+      entries: fallbackEntries,
+      weight: fallbackEntries.length,
+    });
+  }
+
+  const top3Candidates = eventCandidates.slice(0, 3);
+  const secondaryCandidates = eventCandidates.slice(3, 7);
+  const top3Sections = top3Candidates
+    .map((evt, i) => buildEventBlock(evt.title, evt.entries, i + 1))
+    .join('\n\n');
+  const secondarySections = secondaryCandidates
+    .map((evt, i) => (
+      `### ${evt.topic}\n\n${buildEventBlock(`${evt.title} 进展`, evt.entries, i + 1)}`
+    ))
+    .join('\n\n');
 
   return `# AI Pulse - X Daily Brief
 
