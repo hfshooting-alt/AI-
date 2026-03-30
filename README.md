@@ -124,6 +124,7 @@ compositeScore = outputCount + interactionScore × 2
 | `GEMINI_MAX_OUTPUT_TOKENS` | 否 | 最大输出 token（默认 65536） |
 | `GEMINI_TEMPERATURE` | 否 | 温度参数（默认 1.0） |
 | `GEMINI_THINKING_LEVEL` | 否 | 思考深度 minimal / low / medium / high |
+| `GEMINI_RETRY_WEAK_STRUCTURE` | 否 | 当日报结构过弱（TOP3/中热度/链接不足）时是否自动重试一次 Gemini（默认 true） |
 | `SMTP_HOST` | 是 | SMTP 服务器 |
 | `SMTP_PORT` | 是 | SMTP 端口 |
 | `SMTP_USER` | 是 | SMTP 用户名 |

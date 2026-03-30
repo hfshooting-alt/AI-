@@ -947,6 +947,8 @@ function stripSourcelessDynamic(text) {
   const result = [];
   let inDynamicBlock = false;
   let strippedCount = 0;
+  let dynamicListCount = 0;
+  let keptWithSourceCount = 0;
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
@@ -961,8 +963,10 @@ function stripSourcelessDynamic(text) {
 
     // If we're in a dynamic block and hit a list item (bullet/numbered), check for source
     if (inDynamicBlock && /^([-•*]\s+|\d+[.)、]\s+)/.test(trimmed)) {
+      dynamicListCount += 1;
       // Check if this line contains a source link pattern [@...](url)
       if (/\[@[^\]]+\]\(https?:\/\/[^)]+\)/.test(trimmed)) {
+        keptWithSourceCount += 1;
         result.push(line);
       } else {
         strippedCount += 1;
@@ -977,6 +981,15 @@ function stripSourcelessDynamic(text) {
     }
 
     result.push(line);
+  }
+
+  // Safety valve: if strict stripping would wipe out essentially all dynamics,
+  // keep original text to avoid empty report cards in email.
+  if (dynamicListCount > 0 && keptWithSourceCount === 0 && strippedCount > 0) {
+    console.warn(
+      `stripSourcelessDynamic fallback: stripped=${strippedCount}, dynamicListCount=${dynamicListCount}, kept=${keptWithSourceCount}. Returning original markdown to avoid empty sections.`,
+    );
+    return text;
   }
 
   if (strippedCount > 0) {
@@ -1576,6 +1589,30 @@ async function loadPromptRules() {
   }
 }
 
+function extractSection(text, startPattern, endPattern) {
+  const source = String(text || '');
+  const startMatch = source.match(startPattern);
+  if (!startMatch) return '';
+  const startIdx = startMatch.index + startMatch[0].length;
+  const rest = source.slice(startIdx);
+  const endMatch = rest.match(endPattern);
+  return endMatch ? rest.slice(0, endMatch.index) : rest;
+}
+
+function analyzeReportStructure(markdown) {
+  const text = String(markdown || '').replace(/\r\n/g, '\n');
+  const top3Section = extractSection(text, /^##\s*TOP3[^\n]*\n?/im, /^##\s+/im);
+  const secondarySection = extractSection(text, /^##\s*中热度[^\n]*\n?/im, /^##\s*(TOP20活跃人物|Today's Summary)\b/im);
+  const top3EventCount = (top3Section.match(/^\d+\.\s+/gm) || []).length;
+  const secondaryEventCount = (secondarySection.match(/^\d+\.\s+/gm) || []).length;
+  const sourceLinkCount = (text.match(/\[@[^\]]+\]\(https?:\/\/[^)]+\)/g) || []).length;
+  return { top3EventCount, secondaryEventCount, sourceLinkCount };
+}
+
+function isStructureWeak(structure) {
+  return structure.top3EventCount < 3 || structure.secondaryEventCount < 4 || structure.sourceLinkCount < 10;
+}
+
 async function generateReport(items, top20, stats, peopleStats) {
   if (!Array.isArray(items) || items.length === 0) {
     return `# AI Pulse - X Daily Brief\n\n今日无可用AI相关内容。\n`;
@@ -1602,10 +1639,36 @@ async function generateReport(items, top20, stats, peopleStats) {
   const promptRules = await loadPromptRules();
   const rulesSection = promptRules ? `\n\n## 额外规则（基于历史反馈，必须遵守）\n${promptRules}` : '';
   const prompt = `${getPromptTemplate()}${rulesSection}\n\n话题统计（宏观参考，已按participantCount降序排列）：\n${JSON.stringify(stats, null, 2)}\n\n去重后的原始动态（共${compactItems.length}条）。请你独立判断每条动态的具体主题，然后按主题相似性聚类为具体事件，再根据每个事件涉及的不同人数（participantCount）排序：\n${JSON.stringify(compactItems, null, 2)}`;
-  const markdown = await requestGeminiReport({ apiKey, model, prompt });
-  const normalized = normalizeMarkdownLayout(markdown);
-  const withRealNameLinks = relabelSourceLinksWithRealNames(normalized, top20);
-  const reportBody = appendTop20Appendix(withRealNameLinks, top20, peopleStats);
+  let markdown = await requestGeminiReport({ apiKey, model, prompt });
+  let normalized = normalizeMarkdownLayout(markdown);
+  let withRealNameLinks = relabelSourceLinksWithRealNames(normalized, top20);
+  let reportBody = appendTop20Appendix(withRealNameLinks, top20, peopleStats);
+  let structure = analyzeReportStructure(reportBody);
+  console.log(
+    `Report structure stats: top3=${structure.top3EventCount}, secondary=${structure.secondaryEventCount}, sourceLinks=${structure.sourceLinkCount}`,
+  );
+
+  const retryWeakStructure = parseBooleanEnv(process.env.GEMINI_RETRY_WEAK_STRUCTURE, true);
+  if (retryWeakStructure && isStructureWeak(structure)) {
+    console.warn(
+      `Weak report structure detected. Retrying Gemini once (top3=${structure.top3EventCount}, secondary=${structure.secondaryEventCount}, links=${structure.sourceLinkCount})...`,
+    );
+    const repairPrompt = `${prompt}
+
+上一次输出结构不达标，请重新输出并严格满足：
+- TOP3热度事件必须正好3条（编号1-3）
+- 中热度话题下至少4条事件
+- 每条事件至少2条相关动态，且每条动态都必须包含 [@本名](url) 链接
+- 不要跳号（例如 1 后直接到 4）`;
+    markdown = await requestGeminiReport({ apiKey, model, prompt: repairPrompt });
+    normalized = normalizeMarkdownLayout(markdown);
+    withRealNameLinks = relabelSourceLinksWithRealNames(normalized, top20);
+    reportBody = appendTop20Appendix(withRealNameLinks, top20, peopleStats);
+    structure = analyzeReportStructure(reportBody);
+    console.log(
+      `Report structure stats after retry: top3=${structure.top3EventCount}, secondary=${structure.secondaryEventCount}, sourceLinks=${structure.sourceLinkCount}`,
+    );
+  }
 
   // Generate summary as a separate step based on the finished report
   console.log('Generating Today\'s Summary based on report content...');
