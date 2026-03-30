@@ -137,6 +137,8 @@ compositeScore = outputCount + interactionScore × 2
 | `APIFY_SKIP_SECOND_FETCH_IF_SUFFICIENT` | 否 | 当 weekly 数据已足够覆盖 TOP20 的日窗口时，跳过第二次 Apify 抓取（默认 true） |
 | `APIFY_DAILY_MIN_ITEMS` | 否 | 判断 weekly 子集“足够”时的最小日动态数量阈值（默认 80） |
 | `APIFY_DAILY_MAX_MISSING_TOP20` | 否 | 判断 weekly 子集“足够”时允许缺失动态的 TOP20 人数上限（默认 8） |
+| `APIFY_DAILY_MIN_AI_ITEMS` | 否 | 跳过第二次抓取前，weekly 子集里最少 AI 相关动态数（默认 30） |
+| `APIFY_DAILY_MIN_AI_HANDLES` | 否 | 跳过第二次抓取前，weekly 子集里最少有 AI 动态的 TOP20 账号数（默认 8） |
 | `CROSS_VALIDATE_USE_JINA` | 否 | 交叉验证抓取失败时是否启用 `r.jina.ai` 回源兜底（默认 true） |
 
 ## 项目结构

@@ -286,16 +286,20 @@ async function tryReuseRecentRun({ token, actorId, input }) {
   const expectedFingerprint = getInputFingerprint(input);
   const recentRuns = await listRecentActorRuns({ token, actorId, limit });
   if (recentRuns.length === 0) return null;
+  let freshRuns = 0;
+  let fingerprintMatches = 0;
 
   for (const run of recentRuns) {
     const runId = String(run?.id || '').trim();
     const datasetId = String(run?.defaultDatasetId || run?.defaultDataset || run?.datasetId || '').trim();
     if (!runId || !datasetId) continue;
     if (!isRunFreshEnough(run, maxAgeHours)) continue;
+    freshRuns += 1;
     try {
       const runInput = await fetchRunInput({ token, runId });
       const fingerprint = getInputFingerprint(runInput);
       if (fingerprint !== expectedFingerprint) continue;
+      fingerprintMatches += 1;
       const items = await fetchDatasetItemsById({ token, datasetId });
       console.log(`Apify cache hit: reused run ${runId} (dataset ${datasetId}, items=${items.length})`);
       return { items, runData: run, datasetId, reused: true };
@@ -303,6 +307,7 @@ async function tryReuseRecentRun({ token, actorId, input }) {
       console.warn(`Apify reuse candidate skipped (${runId}): ${err.message}`);
     }
   }
+  console.log(`Apify reuse miss: checked=${recentRuns.length}, fresh=${freshRuns}, fingerprintMatched=${fingerprintMatches}`);
   return null;
 }
 
@@ -344,8 +349,8 @@ function toBjtDateString(dateObj) {
 function extractItemBjtDate(item) {
   const createdAt = extractCreatedAtFromItem(item);
   if (!createdAt) return '';
-  const parsed = new Date(createdAt);
-  if (Number.isNaN(parsed.getTime())) return '';
+  const parsed = parseDateLoose(createdAt);
+  if (!parsed || Number.isNaN(parsed.getTime())) return '';
   return toBjtDateString(parsed);
 }
 
@@ -391,6 +396,12 @@ function shouldSkipSecondDailyFetch({ candidateItems, top20, maxMissingHandles, 
   const activeHandles = new Set(candidateItems.map((item) => normalizeHandle(extractHandleFromItem(item))).filter(Boolean));
   const missing = top20.filter((p) => !activeHandles.has(normalizeHandle(p.handle))).length;
   return missing <= maxMissingHandles;
+}
+
+function getDailyAiCoverage(items) {
+  const aiItems = (items || []).filter(isAiRelatedItem);
+  const aiHandles = new Set(aiItems.map((item) => normalizeHandle(extractHandleFromItem(item))).filter(Boolean));
+  return { aiItems, aiCount: aiItems.length, aiHandleCount: aiHandles.size };
 }
 
 function isAiRelatedItem(item) {
@@ -2046,15 +2057,23 @@ async function main() {
   const enableSkipSecondFetch = parseBooleanEnv(process.env.APIFY_SKIP_SECOND_FETCH_IF_SUFFICIENT, true);
   const dailyMinItems = Number(process.env.APIFY_DAILY_MIN_ITEMS || 80);
   const maxMissingHandles = Number(process.env.APIFY_DAILY_MAX_MISSING_TOP20 || 8);
+  const dailyMinAiItems = Number(process.env.APIFY_DAILY_MIN_AI_ITEMS || 30);
+  const dailyMinAiHandles = Number(process.env.APIFY_DAILY_MIN_AI_HANDLES || 8);
   const enoughByWeekly = shouldSkipSecondDailyFetch({
     candidateItems: dailyFromWeekly,
     top20,
     maxMissingHandles: Number.isFinite(maxMissingHandles) ? Math.max(0, Math.floor(maxMissingHandles)) : 8,
     minItems: Number.isFinite(dailyMinItems) ? Math.max(1, Math.floor(dailyMinItems)) : 80,
   });
+  const weeklyAiCoverage = getDailyAiCoverage(dailyFromWeekly);
+  const enoughAiCoverage = weeklyAiCoverage.aiCount >= (Number.isFinite(dailyMinAiItems) ? Math.max(1, Math.floor(dailyMinAiItems)) : 30)
+    && weeklyAiCoverage.aiHandleCount >= (Number.isFinite(dailyMinAiHandles) ? Math.max(1, Math.floor(dailyMinAiHandles)) : 8);
+  console.log(
+    `Daily weekly-subset coverage: total=${dailyFromWeekly.length}, ai=${weeklyAiCoverage.aiCount}, aiHandles=${weeklyAiCoverage.aiHandleCount}, threshold(total>=${dailyMinItems}, ai>=${dailyMinAiItems}, aiHandles>=${dailyMinAiHandles})`,
+  );
 
   let dailyItems;
-  if (enableSkipSecondFetch && enoughByWeekly) {
+  if (enableSkipSecondFetch && enoughByWeekly && enoughAiCoverage) {
     dailyItems = dailyFromWeekly;
     console.log(`Daily fetch skipped: reused weekly subset (${dailyItems.length} items, top20=${top20.length})`);
   } else {
