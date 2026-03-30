@@ -941,8 +941,8 @@ function stripSourcelessDynamic(text) {
       continue;
     }
 
-    // If we're in a dynamic block and hit a dash-prefixed line, check for source
-    if (inDynamicBlock && /^[-•*]\s+/.test(trimmed)) {
+    // If we're in a dynamic block and hit a list item (bullet/numbered), check for source
+    if (inDynamicBlock && /^([-•*]\s+|\d+[.)、]\s+)/.test(trimmed)) {
       // Check if this line contains a source link pattern [@...](url)
       if (/\[@[^\]]+\]\(https?:\/\/[^)]+\)/.test(trimmed)) {
         result.push(line);
@@ -953,8 +953,8 @@ function stripSourcelessDynamic(text) {
       continue;
     }
 
-    // If we hit a non-dash, non-empty line while in dynamic block, leave the block
-    if (inDynamicBlock && trimmed !== '' && !/^[-•*]\s+/.test(trimmed)) {
+    // If we hit a non-list, non-empty line while in dynamic block, leave the block
+    if (inDynamicBlock && trimmed !== '' && !/^([-•*]\s+|\d+[.)、]\s+)/.test(trimmed)) {
       inDynamicBlock = false;
     }
 
@@ -1020,7 +1020,8 @@ function markdownToStyledHtml(markdown) {
   // Track ## section headers from Gemini output to preserve its topic grouping
   let currentSectionTitle = '';
 
-  for (const line of contentLines) {
+  for (let lineIndex = 0; lineIndex < contentLines.length; lineIndex += 1) {
+    const line = contentLines[lineIndex];
     if (/^##\s*TOP20活跃人物/i.test(line)) {
       if (currentEvent) {
         events.push(currentEvent);
@@ -1077,7 +1078,7 @@ function markdownToStyledHtml(markdown) {
           if (currentEvent) { events.push(currentEvent); currentEvent = null; }
           inRelatedDynamicBlock = false;
           // Collect remaining lines as summary until end or next ## section
-          let k = contentLines.indexOf(line) + 1;
+          let k = lineIndex + 1;
         while (k < contentLines.length && !/^##\s+/.test(contentLines[k])) {
           const sl = contentLines[k].replace(/^[○■*-]\s+/, '').trim();
           if (sl) summaryLines.push(sl);
@@ -1628,9 +1629,24 @@ async function sendEmail(reportMarkdown) {
 
 function parseDateLoose(value) {
   if (!value) return null;
+  const asNumber = Number(String(value).trim());
+  if (Number.isFinite(asNumber)) {
+    // Support unix seconds / milliseconds timestamps
+    const ms = asNumber > 1e12 ? asNumber : asNumber > 1e9 ? asNumber * 1000 : NaN;
+    if (Number.isFinite(ms)) {
+      const d = new Date(ms);
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+  }
   const parsed = new Date(value);
   if (!Number.isNaN(parsed.getTime())) return parsed;
   const normalized = String(value).replace(/年|\/|\./g, '-').replace(/月/g, '-').replace(/日/g, '').trim();
+  // If timestamp has no timezone info, assume UTC to avoid host-locale drift.
+  const maybeNoTimezone = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?$/.test(normalized)
+    ? `${normalized.replace(' ', 'T')}Z`
+    : normalized;
+  const parsedNoTz = new Date(maybeNoTimezone);
+  if (!Number.isNaN(parsedNoTz.getTime())) return parsedNoTz;
   const parsedNormalized = new Date(normalized);
   if (!Number.isNaN(parsedNormalized.getTime())) return parsedNormalized;
   return null;
