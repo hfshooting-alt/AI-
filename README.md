@@ -131,7 +131,7 @@ compositeScore = outputCount + interactionScore × 2
 | `SMTP_PASS` | 是 | SMTP 密码 |
 | `MAIL_FROM` | 是 | 发件人 |
 | `MAIL_TO` | 是 | 收件人 |
-| `MAIL_SUBJECT` | 否 | 邮件主题 |
+| `MAIL_SUBJECT` | 否 | 邮件主题（默认：`[YYYY-MM-DD] AI Pulse - X Daily Brief`，日期为北京时间） |
 | `APIFY_REUSE_RECENT_RUNS` | 否 | 是否优先复用最近成功 run 的 dataset（默认 true） |
 | `APIFY_REUSE_RUNS_LIMIT` | 否 | 复用检查的最近 run 数量（默认 10，最大 50） |
 | `APIFY_REUSE_MAX_AGE_HOURS` | 否 | 仅复用最近 N 小时内的 run（默认 36 小时） |

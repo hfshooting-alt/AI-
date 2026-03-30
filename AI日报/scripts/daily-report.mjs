@@ -1792,7 +1792,8 @@ async function sendEmail(reportMarkdown) {
     );
   }
 
-  const subject = process.env.MAIL_SUBJECT || `Twitter AI 动态日报 ${new Date().toISOString().slice(0, 10)}`;
+  const reportDate = formatBjtDateDaysAgo(0);
+  const subject = process.env.MAIL_SUBJECT || `[${reportDate}] AI Pulse - X Daily Brief`;
   const to = requireEnv('MAIL_TO').split(',').map((v) => v.trim()).filter(Boolean);
   if (to.length === 0) throw new Error('MAIL_TO must contain at least one email recipient.');
 
