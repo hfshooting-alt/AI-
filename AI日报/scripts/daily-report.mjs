@@ -1231,6 +1231,12 @@ function markdownToStyledHtml(markdown) {
     secondary.length = 0;
     secondary.push(...events.slice(top3.length));
   }
+  if (top3.length < 3 && secondary.length > 0) {
+    const deficit = 3 - top3.length;
+    const borrowed = secondary.splice(0, deficit);
+    top3.push(...borrowed);
+    console.log(`Renderer adjusted top3 count: borrowed=${borrowed.length}, top3=${top3.length}, secondary=${secondary.length}`);
+  }
   console.log(`Renderer parse stats: events=${events.length}, top3=${top3.length}, secondary=${secondary.length}`);
 
   // Group secondary events by Gemini's own ## section titles instead of re-classifying
@@ -1614,6 +1620,7 @@ function isStructureWeak(structure) {
 }
 
 function buildFallbackReportFromItems(items, top20) {
+  console.log('fallback zh dynamic mode enabled');
   const nameMap = new Map((top20 || []).map((p) => [normalizeHandle(p.handle), p.name || p.handle]));
   const topicBuckets = new Map();
   for (const item of items || []) {
@@ -1646,7 +1653,7 @@ function buildFallbackReportFromItems(items, top20) {
   const buildEventBlock = (topic, entries, index) => {
     const dynamics = entries
       .slice(0, 4)
-      .map((e) => `     - [@${e.name}](${e.url}): ${e.text}`)
+      .map((e) => `     - [@${e.name}](${e.url}): 发布了与「${topic}」相关动态，详见原帖。`)
       .join('\n');
     return `${index}. ${topic} 相关信号持续升温
    - **热点解析：** ${topic} 在今日监测样本中出现频率较高，涉及多位活跃账号，建议结合相关动态快速判断对业务的直接影响。
