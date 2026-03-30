@@ -391,6 +391,13 @@ function selectDailyItemsFromWeekly({ weeklyItems, top20Handles, dailySince, dai
   });
 }
 
+function filterItemsByBjtDateRange(items, startInclusive, endExclusive) {
+  return (items || []).filter((item) => {
+    const bjtDate = extractItemBjtDate(item);
+    return isDateInHalfOpenRange(bjtDate, startInclusive, endExclusive);
+  });
+}
+
 function shouldSkipSecondDailyFetch({ candidateItems, top20, maxMissingHandles, minItems }) {
   if (!Array.isArray(candidateItems) || candidateItems.length < minItems) return false;
   const activeHandles = new Set(candidateItems.map((item) => normalizeHandle(extractHandleFromItem(item))).filter(Boolean));
@@ -946,7 +953,7 @@ function stripSourcelessDynamic(text) {
     const trimmed = line.trim();
 
     // Detect start of 相关动态 block
-    if (/\*\*相关动态[：:]?\*\*/.test(trimmed)) {
+    if (/\*\*相关动态[：:]?\*\*/.test(trimmed) || /^相关动态[：:]?$/.test(trimmed)) {
       inDynamicBlock = true;
       result.push(line);
       continue;
@@ -1078,9 +1085,8 @@ function markdownToStyledHtml(markdown) {
     const boldTitle = !ordered && line.match(/^\*\*([^*]+)\*\*\s*$/);
     const dynamicNumberedLine = /^\d+[.)、]\s+\[@[^\]]+\]\(https?:\/\/[^)]+\)/.test(line.trim());
     if (ordered || boldTitle) {
-      if (currentEvent && inRelatedDynamicBlock && dynamicNumberedLine) {
-        // Numbered dynamics under "相关动态" should stay as action lines,
-        // not be mistaken for a new top-level event title.
+      if (currentEvent && inRelatedDynamicBlock && ordered) {
+        // While inside "相关动态", numbered lines are dynamic entries, not new events.
       } else {
       const candidateTitle = ordered ? ordered[2] : boldTitle[1];
       // If this numbered item is actually "Today's Summary" / "今日总结", treat it as
@@ -1212,6 +1218,7 @@ function markdownToStyledHtml(markdown) {
     secondary.length = 0;
     secondary.push(...events.slice(top3.length));
   }
+  console.log(`Renderer parse stats: events=${events.length}, top3=${top3.length}, secondary=${secondary.length}`);
 
   // Group secondary events by Gemini's own ## section titles instead of re-classifying
   const grouped = new Map();
@@ -2022,6 +2029,7 @@ async function main() {
 
   const today = formatBjtDateDaysAgo(0);
   const yesterday = formatBjtDateDaysAgo(1);
+  const tomorrow = formatBjtDateDaysAgo(-1);
   const weekAgo = formatBjtDateDaysAgo(7);
 
   const rosterHandles = roster.map((p) => p.handle);
@@ -2043,16 +2051,23 @@ async function main() {
   const tablePaths = await writeWeeklyCountsTable(ranking);
   console.log(`Weekly output table saved: ${tablePaths.artifactMarkdownPath}, ${tablePaths.artifactCsvPath}`);
 
-  // NOTE: Twitter since/until uses UTC dates, but we generate BJT dates.
-  // This causes ~8h offset: some older tweets included, some recent ones missed.
-  // For better precision, filter by item.createdAt timestamp after fetching.
-  const dailyInput = buildApifyInput(templateInput, top20.map((p) => p.handle), yesterday, today, 1000);
-  if (top20.length > 0) console.log(`Example daily searchTerm: from:${top20[0].handle} since:${yesterday} until:${today}`);
+  // We want BJT "today + yesterday". Since Twitter since/until is UTC-date based,
+  // we query a slightly broader window then apply precise BJT-date filtering locally.
+  const dailyTargetSince = yesterday;
+  const dailyTargetUntil = tomorrow; // exclusive: include yesterday and today
+  const dailyQuerySince = formatBjtDateDaysAgo(2);
+  const dailyQueryUntil = tomorrow;
+  const dailyInput = buildApifyInput(templateInput, top20.map((p) => p.handle), dailyQuerySince, dailyQueryUntil, 1000);
+  if (top20.length > 0) {
+    console.log(
+      `Example daily searchTerm: from:${top20[0].handle} since:${dailyQuerySince} until:${dailyQueryUntil} (target BJT range: [${dailyTargetSince}, ${dailyTargetUntil}))`,
+    );
+  }
   const dailyFromWeekly = selectDailyItemsFromWeekly({
     weeklyItems,
     top20Handles: top20.map((p) => p.handle),
-    dailySince: yesterday,
-    dailyUntil: today,
+    dailySince: dailyTargetSince,
+    dailyUntil: dailyTargetUntil,
   });
   const enableSkipSecondFetch = parseBooleanEnv(process.env.APIFY_SKIP_SECOND_FETCH_IF_SUFFICIENT, true);
   const dailyMinItems = Number(process.env.APIFY_DAILY_MIN_ITEMS || 80);
@@ -2081,6 +2096,8 @@ async function main() {
     dailyItems = mergeUniqueItems(dailyFromWeekly, daily.items);
     console.log(`Daily fetched via Apify and merged: weeklySubset=${dailyFromWeekly.length}, fetched=${daily.items.length}, merged=${dailyItems.length}`);
   }
+  dailyItems = filterItemsByBjtDateRange(dailyItems, dailyTargetSince, dailyTargetUntil);
+  console.log(`Daily items after precise BJT date filter [${dailyTargetSince}, ${dailyTargetUntil}): ${dailyItems.length}`);
 
   const aiRelatedDaily = dailyItems.filter(isAiRelatedItem);
   console.log(`Daily items: ${dailyItems.length}, AI-related: ${aiRelatedDaily.length}`);
