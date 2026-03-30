@@ -1613,6 +1613,52 @@ function isStructureWeak(structure) {
   return structure.top3EventCount < 3 || structure.secondaryEventCount < 4 || structure.sourceLinkCount < 10;
 }
 
+function buildFallbackReportFromItems(items, top20) {
+  const nameMap = new Map((top20 || []).map((p) => [normalizeHandle(p.handle), p.name || p.handle]));
+  const topicBuckets = new Map();
+  for (const item of items || []) {
+    const handle = normalizeHandle(extractHandleFromItem(item));
+    if (!handle) continue;
+    const text = extractTextFromItem(item).replace(/\s+/g, ' ').trim();
+    const url = item?.url || item?.tweetUrl || item?.link || '';
+    if (!text || !url) continue;
+    const topic = classifyHotspots(text)[0] || '其他AI动态';
+    if (!topicBuckets.has(topic)) topicBuckets.set(topic, []);
+    topicBuckets.get(topic).push({ handle, name: nameMap.get(handle) || handle, text: text.slice(0, 180), url });
+  }
+
+  const sortedTopics = Array.from(topicBuckets.entries())
+    .sort((a, b) => b[1].length - a[1].length);
+
+  const buildEventBlock = (topic, entries, index) => {
+    const dynamics = entries
+      .slice(0, 4)
+      .map((e) => `     - [@${e.name}](${e.url}): ${e.text}`)
+      .join('\n');
+    return `${index}. ${topic} 相关信号持续升温
+   - **热点解析：** ${topic} 在今日监测样本中出现频率较高，涉及多位活跃账号，建议结合相关动态快速判断对业务的直接影响。
+   - **相关动态：**
+${dynamics}`;
+  };
+
+  const top3Sections = sortedTopics.slice(0, 3).map(([topic, entries], i) => buildEventBlock(topic, entries, i + 1)).join('\n\n');
+  const secondaryTopics = sortedTopics.slice(3, 7);
+  const secondarySections = secondaryTopics.map(([topic, entries], i) => (
+    `### ${topic}\n\n${buildEventBlock(`${topic} 进展`, entries, i + 1)}`
+  )).join('\n\n');
+
+  return `# AI Pulse - X Daily Brief
+
+## TOP3 热度事件
+
+${top3Sections || '1. 今日核心信号不足\n   - **热点解析：** 今日样本中可聚类信号有限，建议关注明日增量。\n   - **相关动态：**\n     - [@来源](https://x.com): 暂无可用来源。'}
+
+## 中热度话题
+
+${secondarySections || '### 其他观察\n\n1. 事件补充\n   - **热点解析：** 中热度事件不足，保留观察。\n   - **相关动态：**\n     - [@来源](https://x.com): 暂无可用来源。'}
+`;
+}
+
 async function generateReport(items, top20, stats, peopleStats) {
   if (!Array.isArray(items) || items.length === 0) {
     return `# AI Pulse - X Daily Brief\n\n今日无可用AI相关内容。\n`;
@@ -1667,6 +1713,19 @@ async function generateReport(items, top20, stats, peopleStats) {
     structure = analyzeReportStructure(reportBody);
     console.log(
       `Report structure stats after retry: top3=${structure.top3EventCount}, secondary=${structure.secondaryEventCount}, sourceLinks=${structure.sourceLinkCount}`,
+    );
+  }
+  if (isStructureWeak(structure)) {
+    console.warn(
+      `Report structure still weak after retry. Falling back to deterministic structure from source items (top3=${structure.top3EventCount}, secondary=${structure.secondaryEventCount}, links=${structure.sourceLinkCount}).`,
+    );
+    const fallbackMarkdown = buildFallbackReportFromItems(promptItems, top20);
+    normalized = normalizeMarkdownLayout(fallbackMarkdown);
+    withRealNameLinks = relabelSourceLinksWithRealNames(normalized, top20);
+    reportBody = appendTop20Appendix(withRealNameLinks, top20, peopleStats);
+    structure = analyzeReportStructure(reportBody);
+    console.log(
+      `Report structure stats after deterministic fallback: top3=${structure.top3EventCount}, secondary=${structure.secondaryEventCount}, sourceLinks=${structure.sourceLinkCount}`,
     );
   }
 
