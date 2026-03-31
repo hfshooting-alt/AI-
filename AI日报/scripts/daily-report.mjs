@@ -1098,8 +1098,8 @@ function markdownToStyledHtml(markdown) {
     const boldTitle = !ordered && line.match(/^\*\*([^*]+)\*\*\s*$/);
     const dynamicNumberedLine = /^\d+[.)、]\s+\[@[^\]]+\]\(https?:\/\/[^)]+\)/.test(line.trim());
     if (ordered || boldTitle) {
-      if (currentEvent && inRelatedDynamicBlock && ordered) {
-        // While inside "相关动态", numbered lines are dynamic entries, not new events.
+      if (currentEvent && inRelatedDynamicBlock && ordered && dynamicNumberedLine) {
+        // While inside "相关动态", numbered lines WITH source links are dynamic entries, not new events.
       } else {
       const candidateTitle = ordered ? ordered[2] : boldTitle[1];
       // If this numbered item is actually "Today's Summary" / "今日总结", treat it as
@@ -1237,6 +1237,8 @@ function markdownToStyledHtml(markdown) {
     top3.push(...borrowed);
     console.log(`Renderer adjusted top3 count: borrowed=${borrowed.length}, top3=${top3.length}, secondary=${secondary.length}`);
   }
+  // Renumber top3 events sequentially (borrowed events may carry wrong indices)
+  top3.forEach((evt, i) => { evt.index = i + 1; });
   console.log(`Renderer parse stats: events=${events.length}, top3=${top3.length}, secondary=${secondary.length}`);
 
   // Group secondary events by Gemini's own ## section titles instead of re-classifying
@@ -1631,6 +1633,8 @@ function buildFallbackReportFromItems(items, top20) {
     if (!text || !url) continue;
     const topic = classifyHotspots(text)[0] || '其他AI动态';
     if (!topicBuckets.has(topic)) topicBuckets.set(topic, []);
+    // Dedup: skip if this handle already exists in this topic bucket
+    if (topicBuckets.get(topic).some((e) => e.handle === handle)) continue;
     topicBuckets.get(topic).push({ handle, name: nameMap.get(handle) || handle, text: text.slice(0, 180), url });
   }
 
@@ -1655,8 +1659,10 @@ function buildFallbackReportFromItems(items, top20) {
       .slice(0, 4)
       .map((e) => `     - [@${e.name}](${e.url}): 发布了与「${topic}」相关动态，详见原帖。`)
       .join('\n');
+    const names = entries.slice(0, 3).map((e) => e.name).join('、');
+    const namesSuffix = entries.length > 3 ? '等' : '';
     return `${index}. ${topic} 相关信号持续升温
-   - **热点解析：** ${topic} 在今日监测样本中出现频率较高，涉及多位活跃账号，建议结合相关动态快速判断对业务的直接影响。
+   - **热点解析：** ${topic} 在今日监测样本中出现频率较高，涉及${names}${namesSuffix}${entries.length}位活跃账号，建议结合相关动态快速判断对业务的直接影响。
    - **相关动态：**
 ${dynamics}`;
   };
@@ -1674,8 +1680,23 @@ ${dynamics}`;
     });
   }
 
-  const top3Candidates = eventCandidates.slice(0, 3);
-  const secondaryCandidates = eventCandidates.slice(3, 7);
+  // Pick top3 with topic diversity: at most 1 per topic first, then fill remaining
+  const top3Candidates = [];
+  const usedTopics = new Set();
+  for (const evt of eventCandidates) {
+    if (top3Candidates.length >= 3) break;
+    if (!usedTopics.has(evt.topic)) {
+      top3Candidates.push(evt);
+      usedTopics.add(evt.topic);
+    }
+  }
+  for (const evt of eventCandidates) {
+    if (top3Candidates.length >= 3) break;
+    if (!top3Candidates.includes(evt)) {
+      top3Candidates.push(evt);
+    }
+  }
+  const secondaryCandidates = eventCandidates.filter((e) => !top3Candidates.includes(e)).slice(0, 4);
   const top3Sections = top3Candidates
     .map((evt, i) => buildEventBlock(evt.title, evt.entries, i + 1))
     .join('\n\n');
