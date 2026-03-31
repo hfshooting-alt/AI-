@@ -1250,9 +1250,44 @@ function markdownToStyledHtml(markdown) {
     return `<div style="margin-top:10px;">${tags}</div>`;
   };
 
+  // Merge multiple actions from the same @handle into one consolidated entry.
+  // Input: array of action strings like "[@Name](url): description..."
+  // Output: deduplicated array where same-handle entries are merged.
+  const mergeActionsByHandle = (actions) => {
+    const handleMap = new Map(); // handle -> { link, descriptions[] }
+    const nonLinkActions = [];
+    for (const action of actions) {
+      const m = action.match(/^(\[@[^\]]+\]\(https?:\/\/[^)]+\))\s*[:：]\s*(.+)/);
+      if (m) {
+        const link = m[1];
+        const desc = m[2].trim();
+        // Extract handle from [@Name](url)
+        const handleMatch = link.match(/^\[@([^\]]+)\]/);
+        const handle = handleMatch ? handleMatch[1].toLowerCase() : link;
+        if (handleMap.has(handle)) {
+          handleMap.get(handle).descriptions.push(desc);
+        } else {
+          handleMap.set(handle, { link, descriptions: [desc] });
+        }
+      } else {
+        nonLinkActions.push(action);
+      }
+    }
+    const merged = [];
+    for (const { link, descriptions } of handleMap.values()) {
+      if (descriptions.length > 1) {
+        merged.push(`${link}: ${descriptions.join('；')}`);
+      } else {
+        merged.push(`${link}: ${descriptions[0]}`);
+      }
+    }
+    return [...merged, ...nonLinkActions];
+  };
+
   const renderEventCard = (event) => {
     const analysisText = event.analysis.join(' ').trim();
-    const actions = event.actions.slice(0, 5).map((a) => `<li style="margin:0 0 8px 0;color:#111827;font-size:17px;line-height:1.78;">${formatInlineMarkdown(a)}</li>`).join('');
+    const mergedActions = mergeActionsByHandle(event.actions);
+    const actions = mergedActions.slice(0, 5).map((a) => `<li style="margin:0 0 8px 0;color:#111827;font-size:17px;line-height:1.78;">${formatInlineMarkdown(a)}</li>`).join('');
     return `
       <div style="margin:0 0 16px 0;padding:18px 20px;border:1px solid #E5E7EB;border-radius:12px;background:#FFFFFF;box-shadow:0 2px 8px rgba(17,24,39,0.05);">
         <div style="font-size:14px;color:#4B5563;font-weight:700;letter-spacing:0.4px;margin-bottom:10px;">HOT EVENT ${event.index}</div>
@@ -1266,7 +1301,8 @@ function markdownToStyledHtml(markdown) {
 
   const renderSecondaryTopicGroup = (topic, idx) => {
     const topicItems = topic.items.slice(0, 4).map((event, j) => {
-      const dynamicText = (event.actions[0] || event.analysis[0] || event.title || '').trim();
+      const mergedEvtActions = mergeActionsByHandle(event.actions);
+      const dynamicText = (mergedEvtActions[0] || event.analysis[0] || event.title || '').trim();
       const sourceLink = (event.sources && event.sources.length > 0) ? event.sources[0] : '';
       const composed = sourceLink && !dynamicText.includes('http') ? `${dynamicText} ${sourceLink}`.trim() : dynamicText;
       return `<div style="margin:0 0 10px 0;padding:10px 12px;border:1px solid #E5E7EB;border-radius:8px;background:#FFFFFF;">
@@ -1407,11 +1443,11 @@ function getPromptTemplate() {
 
 ### 通用规则
 - 不需要按传统行业大类分类，请根据数据内容自行发现具体事件
-- **关键约束：同一事件内，每个账号（@handle）最多只能出现1次。** 每条数据代表一个不同的人的观点，请全部使用，不要重复引用同一人
+- **关键约束：同一事件内，如果同一个人（@handle）有多条相关推文，请将它们合并为1条动态，综合描述该人的多条观点。** 每条动态代表一个不同人的视角
 - 不要输出”聚类一/二/三”字样；不要输出”额外观察”与”AI大厂与投资机构资讯”板块
 - 关联动态中的来源链接，不使用”查看原帖”，统一写成 [@本名](url)（本名不是X用户名）
 - **【强制】每条”相关动态”都必须包含来源链接 [@本名](url)，没有来源链接的动态不要输出。每条动态的格式必须是： - [@本名](url): 描述文字… ，冒号前面是来源链接，冒号后面是描述。**
-- **每条事件的”相关动态”至少2条，尽量3条以上。如果某事件只有1个来源，则将该事件合并到相关事件中，不要单独列出。**
+- **每条事件的”相关动态”尽量2条以上。允许只有1个来源的事件单独列出，不需要强制合并。事件总数量宜多不宜少，中热度话题至少覆盖4-8条事件。**
 - **不要输出 Today's Summary 板块**，Summary将在报告生成后单独生成
 - 输出Markdown，结构清晰，分级列表明确
 `;
@@ -1751,8 +1787,8 @@ async function generateReport(items, top20, stats, peopleStats) {
 
 上一次输出结构不达标，请重新输出并严格满足：
 - TOP3热度事件必须正好3条（编号1-3）
-- 中热度话题下至少4条事件
-- 每条事件至少2条相关动态，且每条动态都必须包含 [@本名](url) 链接
+- 中热度话题下至少4-8条事件，允许只有1个来源的事件单独列出
+- 每条动态都必须包含 [@本名](url) 链接；同一人多条推文合并为1条动态
 - 不要跳号（例如 1 后直接到 4）`;
     markdown = await requestGeminiReport({ apiKey, model, prompt: repairPrompt });
     normalized = normalizeMarkdownLayout(markdown);
