@@ -1055,6 +1055,9 @@ function markdownToStyledHtml(markdown) {
   let inAppendix = false;
   // Track ## section headers from Gemini output to preserve its topic grouping
   let currentSectionTitle = '';
+  // Explicitly track which top-level section we're in: 'top3' | 'secondary' | null.
+  // This lets us split events by section ownership rather than position.
+  let currentSectionMode = null;
 
   for (let lineIndex = 0; lineIndex < contentLines.length; lineIndex += 1) {
     const line = contentLines[lineIndex];
@@ -1081,7 +1084,16 @@ function markdownToStyledHtml(markdown) {
         currentEvent = null;
         inRelatedDynamicBlock = false;
       }
-      currentSectionTitle = sectionMatch[1].replace(/^[一二三四五六七八九十\d]+[、.．]\s*/, '').trim();
+      const rawTitle = sectionMatch[1].replace(/^[一二三四五六七八九十\d]+[、.．]\s*/, '').trim();
+      currentSectionTitle = rawTitle;
+      // Classify section: TOP3 vs 中热度. Be tolerant of variations.
+      if (/(?:TOP\s*3|前三|三大热点|核心热点)/i.test(rawTitle)) {
+        currentSectionMode = 'top3';
+      } else if (/中热度|次要热点|其他热点|次高热度/.test(rawTitle)) {
+        currentSectionMode = 'secondary';
+      } else {
+        currentSectionMode = null;
+      }
       continue;
     }
 
@@ -1131,6 +1143,7 @@ function markdownToStyledHtml(markdown) {
         actions: [],
         sources: [],
         sectionTitle: currentSectionTitle,
+        sectionMode: currentSectionMode,
       };
       continue;
       }
@@ -1155,6 +1168,7 @@ function markdownToStyledHtml(markdown) {
           actions: [],
           sources: [],
           sectionTitle: currentSectionTitle,
+          sectionMode: currentSectionMode,
         };
       }
     }
@@ -1217,17 +1231,34 @@ function markdownToStyledHtml(markdown) {
   if (currentEvent) events.push(currentEvent);
   inRelatedDynamicBlock = false;
 
-  // Unified ranking: all events are treated equally and ranked together.
-  // The first 3 go to TOP3, the rest go to secondary (中热度).
-  // This avoids depending on Gemini's section headers for splitting.
-  const top3 = events.slice(0, Math.min(3, events.length));
-  const secondary = events.slice(top3.length);
-  top3.forEach((evt, i) => { evt.index = i + 1; });
-  console.log(`Renderer parse stats: events=${events.length}, top3=${top3.length}, secondary=${secondary.length}`);
+  // Split events by explicit section ownership (sectionMode). If Gemini didn't
+  // emit recognizable ## section headers, fall back to positional split (first 3 → top3).
+  const taggedTop3 = events.filter((evt) => evt.sectionMode === 'top3');
+  const taggedSecondary = events.filter((evt) => evt.sectionMode === 'secondary');
+  const untaggedEvents = events.filter((evt) => evt.sectionMode !== 'top3' && evt.sectionMode !== 'secondary');
 
-  // Each secondary event is its own standalone card (no grouping by sectionTitle).
-  // This avoids the bug where all events share the same sectionTitle and collapse into 1 group.
+  let top3, secondary;
+  if (taggedTop3.length > 0 || taggedSecondary.length > 0) {
+    // Trust Gemini's section headers. If TOP3 has fewer than 3 events, borrow
+    // from untagged + secondary to fill it up to 3.
+    top3 = taggedTop3.slice(0, 3);
+    const top3Need = 3 - top3.length;
+    if (top3Need > 0) {
+      const fillers = [...untaggedEvents, ...taggedSecondary].slice(0, top3Need);
+      top3 = [...top3, ...fillers];
+      const fillerSet = new Set(fillers);
+      secondary = [...untaggedEvents, ...taggedSecondary].filter((evt) => !fillerSet.has(evt));
+    } else {
+      secondary = [...taggedSecondary, ...untaggedEvents];
+    }
+  } else {
+    // No section tags detected — fall back to positional split.
+    top3 = events.slice(0, Math.min(3, events.length));
+    secondary = events.slice(top3.length);
+  }
+  top3.forEach((evt, i) => { evt.index = i + 1; });
   secondary.forEach((evt, i) => { evt.index = i + 1; });
+  console.log(`Renderer parse stats: events=${events.length}, taggedTop3=${taggedTop3.length}, taggedSecondary=${taggedSecondary.length}, untagged=${untaggedEvents.length}, finalTop3=${top3.length}, finalSecondary=${secondary.length}`);
 
   const sectionTitle = (textValue) => `<h2 style="font-size:24px;line-height:1.35;margin:0;color:#111827;font-weight:700;">${formatInlineMarkdown(textValue)}</h2>`;
 
@@ -1756,7 +1787,9 @@ async function generateReport(items, top20, stats, peopleStats) {
   const rulesSection = promptRules ? `\n\n## 额外规则（基于历史反馈，必须遵守）\n${promptRules}` : '';
   const prompt = `${getPromptTemplate()}${rulesSection}\n\n话题统计（宏观参考，已按participantCount降序排列）：\n${JSON.stringify(stats, null, 2)}\n\n去重后的原始动态（共${compactItems.length}条）。请你独立判断每条动态的具体主题，然后按主题相似性聚类为具体事件，再根据每个事件涉及的不同人数（participantCount）排序：\n${JSON.stringify(compactItems, null, 2)}`;
   let markdown = await requestGeminiReport({ apiKey, model, prompt });
+  try { await fs.writeFile('artifacts/gemini-raw-output.md', markdown || '', 'utf8'); } catch {}
   let normalized = normalizeMarkdownLayout(markdown);
+  try { await fs.writeFile('artifacts/gemini-normalized.md', normalized || '', 'utf8'); } catch {}
   let withRealNameLinks = relabelSourceLinksWithRealNames(normalized, top20);
   let reportBody = appendTop20Appendix(withRealNameLinks, top20, peopleStats);
   let structure = analyzeReportStructure(reportBody);
