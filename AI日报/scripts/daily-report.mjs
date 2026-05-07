@@ -1225,17 +1225,9 @@ function markdownToStyledHtml(markdown) {
   top3.forEach((evt, i) => { evt.index = i + 1; });
   console.log(`Renderer parse stats: events=${events.length}, top3=${top3.length}, secondary=${secondary.length}`);
 
-  // Group secondary events by Gemini's own ## section titles instead of re-classifying
-  const grouped = new Map();
-  for (const evt of secondary) {
-    const topic = evt.sectionTitle || '其他动态';
-    if (!grouped.has(topic)) grouped.set(topic, []);
-    grouped.get(topic).push(evt);
-  }
-  const secondaryTopics = Array.from(grouped.entries())
-    .map(([title, items]) => ({ title, items }))
-    .filter((t) => t.items.length > 0)
-    .slice(0, 4);
+  // Each secondary event is its own standalone card (no grouping by sectionTitle).
+  // This avoids the bug where all events share the same sectionTitle and collapse into 1 group.
+  secondary.forEach((evt, i) => { evt.index = i + 1; });
 
   const sectionTitle = (textValue) => `<h2 style="font-size:24px;line-height:1.35;margin:0;color:#111827;font-weight:700;">${formatInlineMarkdown(textValue)}</h2>`;
 
@@ -1302,22 +1294,17 @@ function markdownToStyledHtml(markdown) {
     `;
   };
 
-  const renderSecondaryTopicGroup = (topic, idx) => {
-    const topicItems = topic.items.slice(0, 4).map((event, j) => {
-      const mergedEvtActions = mergeActionsByHandle(event.actions);
-      const dynamicText = (mergedEvtActions[0] || event.analysis[0] || event.title || '').trim();
-      const sourceLink = (event.sources && event.sources.length > 0) ? event.sources[0] : '';
-      const composed = sourceLink && !dynamicText.includes('http') ? `${dynamicText} ${sourceLink}`.trim() : dynamicText;
-      return `<div style="margin:0 0 10px 0;padding:10px 12px;border:1px solid #E5E7EB;border-radius:8px;background:#FFFFFF;">
-        <div style="font-size:16px;font-weight:700;line-height:1.55;color:#111827;margin-bottom:4px;">动态${j + 1}：${formatInlineMarkdown(event.title)}</div>
-        <div style="font-size:16px;line-height:1.68;color:#4B5563;">${formatInlineMarkdown(composed)}</div>
-      </div>`;
-    }).join('');
-
+  const renderSecondaryEventCard = (event) => {
+    const analysisText = event.analysis.join(' ').trim();
+    const mergedActions = mergeActionsByHandle(event.actions);
+    const actions = mergedActions.slice(0, 5).map((a) => `<li style="margin:0 0 6px 0;color:#374151;font-size:15px;line-height:1.7;">${formatInlineMarkdown(a)}</li>`).join('');
     return `
-      <div style="display:block;width:100%;margin:0 0 14px 0;padding:14px;border:1px solid #E5E7EB;border-radius:10px;background:#F8FAFC;box-sizing:border-box;">
-        <div style="font-size:20px;line-height:1.45;color:#111827;font-weight:700;margin-bottom:10px;">热点${idx + 1}：${formatInlineMarkdown(topic.title)}</div>
-        ${topicItems}
+      <div style="margin:0 0 12px 0;padding:14px 16px;border:1px solid #E5E7EB;border-radius:10px;background:#FFFFFF;">
+        <div style="font-size:13px;color:#6B7280;font-weight:700;letter-spacing:0.3px;margin-bottom:6px;">热点 ${event.index}</div>
+        <div style="font-size:18px;line-height:1.45;color:#111827;font-weight:700;margin-bottom:8px;">${formatInlineMarkdown(event.title)}</div>
+        ${analysisText ? `<div style="font-size:15px;line-height:1.7;color:#374151;margin-bottom:10px;"><span style="font-weight:700;">热点解析：</span>${formatInlineMarkdown(analysisText)}</div>` : ''}
+        ${actions ? `<div style="font-size:14px;font-weight:700;color:#374151;margin:0 0 4px 0;">相关动态：</div><ul style="margin:0;padding-left:18px;">${actions}</ul>` : ''}
+        ${renderSourceTags(event.sources)}
       </div>
     `;
   };
@@ -1345,7 +1332,7 @@ function markdownToStyledHtml(markdown) {
         </tr>
         <tr>
           <td style="padding:0 24px 6px 24px;">
-            ${renderSectionBlock('核心板块', '中热度话题', secondaryTopics.length > 0 ? secondaryTopics.map((topic, i) => renderSecondaryTopicGroup(topic, i)).join('') : '<div style="font-size:16px;color:#4B5563;line-height:1.7;">今日中热度主题较少，建议持续观察明日信号。</div>')}
+            ${renderSectionBlock('核心板块', '中热度话题', secondary.length > 0 ? secondary.slice(0, 10).map(renderSecondaryEventCard).join('') : '<div style="font-size:16px;color:#4B5563;line-height:1.7;">今日中热度主题较少，建议持续观察明日信号。</div>')}
           </td>
         </tr>
         <tr>
@@ -1413,17 +1400,15 @@ function getPromptTemplate() {
 \`\`\`
 
 ### 中热度事件
-从剩余聚类结果中，选出参与人数次高的事件，共输出7-12条事件，分成2-4个Topic。
+从剩余聚类结果中，选出参与人数次高的事件。
+**总共至少输出5条中热度事件，尽量8-12条。不要过度聚类，每个具体事件应独立输出。**
 **每条事件都是一个具体的、独立的事件（如一个产品发布、一项研究突破、一次融资），而不是笼统的大类。**
-**跨Topic排列规则：包含更高参与人数事件的Topic排在前面。**
-**每个Topic内的事件也必须严格按参与人数从高到低排列。**
-**每个Topic至少包含2条事件，每条事件至少包含2条相关动态。**
-**即使只有1个人提到的独立事件，如果有足够信息价值，也可以作为中热度事件输出（放在靠后的Topic中）。**
+**所有中热度事件按参与人数从高到低排列，编号从1开始连续编号。**
+**即使只有1个人提到的独立事件，如果有足够信息价值，也应该作为中热度事件输出。**
 
 \`\`\`
 ## 中热度话题
 
-### Topic标题A
 1. 事件标题X
    - **热点解析：** …
    - **相关动态：**
@@ -1434,10 +1419,8 @@ function getPromptTemplate() {
    - **热点解析：** …
    - **相关动态：**
      - [@本名](url): 动态描述…
-     - [@本名](url): 动态描述…
 
-### Topic标题B
-1. 事件标题Z
+3. 事件标题Z
    - **热点解析：** …
    - **相关动态：**
      - [@本名](url): 动态描述…
@@ -1450,7 +1433,7 @@ function getPromptTemplate() {
 - 不要输出”聚类一/二/三”字样；不要输出”额外观察”与”AI大厂与投资机构资讯”板块
 - 关联动态中的来源链接，不使用”查看原帖”，统一写成 [@本名](url)（本名不是X用户名）
 - **【强制】每条”相关动态”都必须包含来源链接 [@本名](url)，没有来源链接的动态不要输出。每条动态的格式必须是： - [@本名](url): 描述文字… ，冒号前面是来源链接，冒号后面是描述。**
-- **每条事件的”相关动态”尽量2条以上。允许只有1个来源的事件单独列出，不需要强制合并。事件总数量宜多不宜少，中热度话题至少覆盖4-8条事件。**
+- **事件总数量宜多不宜少：TOP3为3条 + 中热度至少5条 = 总计至少8条事件。允许只有1个来源的事件单独列出。**
 - **不要输出 Today's Summary 板块**，Summary将在报告生成后单独生成
 - 输出Markdown，结构清晰，分级列表明确
 `;
@@ -1790,7 +1773,7 @@ async function generateReport(items, top20, stats, peopleStats) {
 
 上一次输出结构不达标，请重新输出并严格满足：
 - TOP3热度事件必须正好3条（编号1-3）
-- 中热度话题下至少4-8条事件，允许只有1个来源的事件单独列出
+- 中热度话题下至少5条独立事件，每个事件单独编号，不要分Topic
 - 每条动态都必须包含 [@本名](url) 链接；同一人多条推文合并为1条动态
 - 不要跳号（例如 1 后直接到 4）`;
     markdown = await requestGeminiReport({ apiKey, model, prompt: repairPrompt });
@@ -1827,8 +1810,12 @@ async function generateReport(items, top20, stats, peopleStats) {
 
 ## 中热度话题
 
-### 话题名称
 1. 事件标题
+   - **热点解析：** 中文描述
+   - **相关动态：**
+     - [@人名](url): 中文描述该推文内容
+
+2. 事件标题
    - **热点解析：** 中文描述
    - **相关动态：**
      - [@人名](url): 中文描述该推文内容
@@ -1837,7 +1824,7 @@ async function generateReport(items, top20, stats, peopleStats) {
 - 所有内容必须是中文
 - 每条相关动态必须包含 [@人名](url) 格式的来源链接
 - 从数据中提炼具体事件，不要用笼统的分类名称作为事件标题
-- TOP3 选参与人数最多的3个事件，中热度选4-8个次要事件
+- TOP3 选参与人数最多的3个事件，中热度至少5个独立事件，不要分Topic子标题
 
 原始数据（共${compactItems.length}条）：
 ${JSON.stringify(compactItems, null, 2)}`;
