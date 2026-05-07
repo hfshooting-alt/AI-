@@ -417,11 +417,11 @@ function isAiRelatedItem(item) {
   const lower = text.toLowerCase();
 
   // Chinese keywords — any single match is a strong signal
-  const cnStrong = ['人工智能', '大模型', '智能体', '机器学习', '深度学习', '神经网络'];
+  const cnStrong = ['人工智能', '大模型', '智能体', '机器学习', '深度学习', '神经网络', '生成式', 'AI应用', 'AI产品'];
   if (cnStrong.some((k) => lower.includes(k))) return true;
 
   // Chinese weak — need context (e.g. "推理" alone could mean logical reasoning in non-AI context)
-  const cnWeak = ['推理', '算力', '芯片', '训练'];
+  const cnWeak = ['推理', '算力', '芯片', '训练', '模型', '数据集', '自动化'];
 
   // English strong — brand names / acronyms that unambiguously mean AI
   const enStrong = [
@@ -431,6 +431,7 @@ function isAiRelatedItem(item) {
     'transformer', 'diffusion model', 'foundation model', 'large language model',
     'grok', 'xai', 'deepseek', 'qwen', 'cursor', 'windsurf', 'devin', 'sora',
     'stable diffusion', 'perplexity', 'cohere', 'inflection', 'character.ai',
+    'o1', 'o3', 'o4', 'sonnet', 'opus', 'haiku',
   ];
 
   // English weak — common words that only indicate AI when combined with other signals
@@ -438,18 +439,20 @@ function isAiRelatedItem(item) {
     'ai', 'model', 'agent', 'training', 'inference', 'robot', 'nvidia',
     'gpu', 'chip', 'fine-tune', 'finetune', 'benchmark', 'reasoning',
     'embedding', 'token', 'prompt', 'rlhf', 'alignment',
+    'dataset', 'compute', 'api', 'deploy', 'eval', 'rag', 'vector',
+    'multimodal', 'agentic', 'automation', 'scaling', 'weights',
   ];
 
   // Strong English: any single hit is enough
   if (enStrong.some((k) => new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text))) return true;
 
-  // Weak scoring: accumulate hits, threshold = 1
+  // Weak scoring: single hit is enough since these items come from curated AI-focused accounts
   let weakHits = 0;
   for (const k of cnWeak) { if (lower.includes(k)) weakHits += 1; }
   for (const k of enWeak) {
     if (new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text)) weakHits += 1;
   }
-  return weakHits >= 2;
+  return weakHits >= 1;
 }
 
 // Rules are ordered from MOST SPECIFIC to LEAST SPECIFIC so that classifyHotspots
@@ -584,7 +587,7 @@ function buildPromptItems(items) {
   // Pass 2: per-person text-similarity dedup — remove near-duplicate content
   // from the same person (similarity > 0.5), but keep distinct events even if
   // they share the same broad topic category.
-  const SIMILARITY_THRESHOLD = 0.5;
+  const SIMILARITY_THRESHOLD = 0.7;
   const perPerson = new Map();
   for (const item of threadDeduped.values()) {
     const handle = normalizeHandle(extractHandleFromItem(item)) || 'unknown';
@@ -1718,7 +1721,7 @@ ${dynamics}`;
   };
 
   const top3Candidates = validEvents.slice(0, Math.min(3, validEvents.length));
-  const secondaryCandidates = validEvents.slice(3, Math.min(7, validEvents.length));
+  const secondaryCandidates = validEvents.slice(3, Math.min(11, validEvents.length));
 
   const top3Sections = top3Candidates
     .map((evt, i) => buildEventBlock(evt.title, evt.entries, i + 1))
