@@ -1222,14 +1222,20 @@ function markdownToStyledHtml(markdown) {
   // This avoids depending on Gemini's section headers for splitting.
   const top3 = events.slice(0, Math.min(3, events.length));
   const secondary = events.slice(top3.length);
-  // Re-index after the unified sort so TOP3 and 中热度 are a single ranked list
-  // split only at render time. This avoids Gemini restarting numbering under
-  // "中热度话题" and making mid-heat items look like one collapsed topic.
   top3.forEach((evt, i) => { evt.index = i + 1; });
-  secondary.forEach((evt, i) => { evt.index = i + 4; });
   console.log(`Renderer parse stats: events=${events.length}, top3=${top3.length}, secondary=${secondary.length}`);
 
-  const secondaryEvents = secondary.slice(0, 8);
+  // Group secondary events by Gemini's own ## section titles instead of re-classifying
+  const grouped = new Map();
+  for (const evt of secondary) {
+    const topic = evt.sectionTitle || '其他动态';
+    if (!grouped.has(topic)) grouped.set(topic, []);
+    grouped.get(topic).push(evt);
+  }
+  const secondaryTopics = Array.from(grouped.entries())
+    .map(([title, items]) => ({ title, items }))
+    .filter((t) => t.items.length > 0)
+    .slice(0, 4);
 
   const sectionTitle = (textValue) => `<h2 style="font-size:24px;line-height:1.35;margin:0;color:#111827;font-weight:700;">${formatInlineMarkdown(textValue)}</h2>`;
 
@@ -1281,13 +1287,13 @@ function markdownToStyledHtml(markdown) {
     return [...merged, ...nonLinkActions];
   };
 
-  const renderEventCard = (event, { badge = 'HOT EVENT' } = {}) => {
+  const renderEventCard = (event) => {
     const analysisText = event.analysis.join(' ').trim();
     const mergedActions = mergeActionsByHandle(event.actions);
     const actions = mergedActions.slice(0, 5).map((a) => `<li style="margin:0 0 8px 0;color:#111827;font-size:17px;line-height:1.78;">${formatInlineMarkdown(a)}</li>`).join('');
     return `
       <div style="margin:0 0 16px 0;padding:18px 20px;border:1px solid #E5E7EB;border-radius:12px;background:#FFFFFF;box-shadow:0 2px 8px rgba(17,24,39,0.05);">
-        <div style="font-size:14px;color:#4B5563;font-weight:700;letter-spacing:0.4px;margin-bottom:10px;">${formatInlineMarkdown(`${badge} ${event.index}`)}</div>
+        <div style="font-size:14px;color:#4B5563;font-weight:700;letter-spacing:0.4px;margin-bottom:10px;">HOT EVENT ${event.index}</div>
         <div style="font-size:20px;line-height:1.45;color:#111827;font-weight:700;margin-bottom:10px;">${formatInlineMarkdown(event.title)}</div>
         <div style="font-size:17px;line-height:1.8;color:#111827;margin-bottom:12px;"><span style="font-size:16px;font-weight:700;">热点解析：</span>${formatInlineMarkdown(analysisText || '今日核心动态持续演进，建议关注执行节奏与信号变化。')}</div>
         ${actions ? `<div style="font-size:16px;font-weight:700;color:#111827;margin:0 0 6px 0;">相关动态：</div><ul style="margin:0;padding-left:20px;">${actions}</ul>` : ''}
@@ -1296,7 +1302,26 @@ function markdownToStyledHtml(markdown) {
     `;
   };
 
-  const renderSecondaryEventCard = (event) => renderEventCard(event, { badge: 'MID EVENT' });
+  const renderSecondaryTopicGroup = (topic, idx) => {
+    const topicItems = topic.items.slice(0, 4).map((event, j) => {
+      const mergedEvtActions = mergeActionsByHandle(event.actions);
+      const dynamicText = (mergedEvtActions[0] || event.analysis[0] || event.title || '').trim();
+      const sourceLink = (event.sources && event.sources.length > 0) ? event.sources[0] : '';
+      const composed = sourceLink && !dynamicText.includes('http') ? `${dynamicText} ${sourceLink}`.trim() : dynamicText;
+      return `<div style="margin:0 0 10px 0;padding:10px 12px;border:1px solid #E5E7EB;border-radius:8px;background:#FFFFFF;">
+        <div style="font-size:16px;font-weight:700;line-height:1.55;color:#111827;margin-bottom:4px;">动态${j + 1}：${formatInlineMarkdown(event.title)}</div>
+        <div style="font-size:16px;line-height:1.68;color:#4B5563;">${formatInlineMarkdown(composed)}</div>
+      </div>`;
+    }).join('');
+
+    return `
+      <div style="display:block;width:100%;margin:0 0 14px 0;padding:14px;border:1px solid #E5E7EB;border-radius:10px;background:#F8FAFC;box-sizing:border-box;">
+        <div style="font-size:20px;line-height:1.45;color:#111827;font-weight:700;margin-bottom:10px;">热点${idx + 1}：${formatInlineMarkdown(topic.title)}</div>
+        ${topicItems}
+      </div>
+    `;
+  };
+
 
   const executiveSummary = summaryLines.length > 0
     ? summaryLines.map((t) => t.replace(/^[-•]\s*/, '').replace(/^[^：:]+[：:]\s*/, '')).join('；')
@@ -1315,12 +1340,12 @@ function markdownToStyledHtml(markdown) {
         </tr>
         <tr>
           <td style="padding:16px 24px 6px 24px;">
-            ${renderSectionBlock('核心板块', 'TOP3 热度事件', top3.length > 0 ? top3.map((event) => renderEventCard(event)).join('') : '<div style="font-size:16px;color:#4b5563;padding:12px 0;line-height:1.7;">今日暂无可用热点事件。</div>')}
+            ${renderSectionBlock('核心板块', 'TOP3 热度事件', top3.length > 0 ? top3.map(renderEventCard).join('') : '<div style="font-size:16px;color:#4b5563;padding:12px 0;line-height:1.7;">今日暂无可用热点事件。</div>')}
           </td>
         </tr>
         <tr>
           <td style="padding:0 24px 6px 24px;">
-            ${renderSectionBlock('核心板块', '中热度事件', secondaryEvents.length > 0 ? secondaryEvents.map(renderSecondaryEventCard).join('') : '<div style="font-size:16px;color:#4B5563;line-height:1.7;">今日中热度事件较少，建议持续观察明日信号。</div>')}
+            ${renderSectionBlock('核心板块', '中热度话题', secondaryTopics.length > 0 ? secondaryTopics.map((topic, i) => renderSecondaryTopicGroup(topic, i)).join('') : '<div style="font-size:16px;color:#4B5563;line-height:1.7;">今日中热度主题较少，建议持续观察明日信号。</div>')}
           </td>
         </tr>
         <tr>
@@ -1614,21 +1639,11 @@ function analyzeReportStructure(markdown) {
   return { top3EventCount, secondaryEventCount, sourceLinkCount };
 }
 
-function getMinSecondaryEventCount() {
-  const v = Number(process.env.REPORT_MIN_SECONDARY_EVENTS || 4);
-  return Number.isFinite(v) && v >= 0 ? Math.min(Math.floor(v), 12) : 4;
-}
-
 function isStructureWeak(structure) {
-  // Retry/fallback when the report is empty, has no source links, or collapses
-  // the unified event ranking into too few visible events. TOP3 and 中热度 are
-  // generated from the same sorted cluster list, so a good report should have
-  // 3 top events plus several mid-heat events whenever the input has enough data.
+  // Only trigger fallback when Gemini output is genuinely empty/broken.
+  // Any meaningful output from Gemini (even imperfect) is better than deterministic fallback.
   const totalEvents = structure.top3EventCount + structure.secondaryEventCount;
-  return totalEvents === 0
-    || structure.sourceLinkCount === 0
-    || structure.top3EventCount < 3
-    || structure.secondaryEventCount < getMinSecondaryEventCount();
+  return totalEvents === 0 || structure.sourceLinkCount === 0;
 }
 
 function buildFallbackReportFromItems(items, top20) {
@@ -1639,6 +1654,7 @@ function buildFallbackReportFromItems(items, top20) {
   // When a tweet matches multiple topics, assign it to the LEAST populated bucket
   // to ensure items are distributed across topics instead of all piling into one.
   const topicBuckets = new Map();
+  const globalHandleTopics = new Map(); // handle → Set of topics already assigned
   for (const item of items || []) {
     const handle = normalizeHandle(extractHandleFromItem(item));
     if (!handle) continue;
@@ -1676,10 +1692,17 @@ function buildFallbackReportFromItems(items, top20) {
     weight: entries.length,
   }));
 
-  // Keep the same person in multiple distinct events. Cross-event handle dedup
-  // made the first TOP3 events consume high-signal accounts and left later
-  // 中热度 events with too few or zero source tweets. Per-topic handle dedup
-  // above is enough to keep each event concise without hiding valid events.
+  // Cross-event handle dedup: if a person already appeared in a higher-priority event,
+  // remove them from lower-priority events to avoid repetition
+  const globalHandleSeen = new Set();
+  for (const evt of eventCandidates) {
+    evt.entries = evt.entries.filter((e) => {
+      if (globalHandleSeen.has(e.handle)) return false;
+      globalHandleSeen.add(e.handle);
+      return true;
+    });
+  }
+  // Remove events that lost all entries after cross-dedup
   const validEvents = eventCandidates.filter((evt) => evt.entries.length > 0);
 
   const buildEventBlock = (title, entries, index) => {
