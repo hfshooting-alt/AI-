@@ -1239,15 +1239,15 @@ function markdownToStyledHtml(markdown) {
 
   let top3, secondary;
   if (taggedTop3.length > 0 || taggedSecondary.length > 0) {
-    // Trust Gemini's section headers. Only borrow from UNTAGGED events
-    // to fill TOP3 — never steal explicitly tagged secondary events.
+    // Trust Gemini's section headers. If TOP3 has fewer than 3 events, borrow
+    // from untagged + secondary to fill it up to 3.
     top3 = taggedTop3.slice(0, 3);
     const top3Need = 3 - top3.length;
-    if (top3Need > 0 && untaggedEvents.length > 0) {
-      const fillers = untaggedEvents.slice(0, top3Need);
+    if (top3Need > 0) {
+      const fillers = [...untaggedEvents, ...taggedSecondary].slice(0, top3Need);
       top3 = [...top3, ...fillers];
       const fillerSet = new Set(fillers);
-      secondary = [...taggedSecondary, ...untaggedEvents.filter((evt) => !fillerSet.has(evt))];
+      secondary = [...untaggedEvents, ...taggedSecondary].filter((evt) => !fillerSet.has(evt));
     } else {
       secondary = [...taggedSecondary, ...untaggedEvents];
     }
@@ -1654,8 +1654,10 @@ function analyzeReportStructure(markdown) {
 }
 
 function isStructureWeak(structure) {
+  // Only trigger fallback when Gemini output is genuinely empty/broken.
+  // Any meaningful output from Gemini (even imperfect) is better than deterministic fallback.
   const totalEvents = structure.top3EventCount + structure.secondaryEventCount;
-  return totalEvents < 5 || structure.sourceLinkCount === 0;
+  return totalEvents === 0 || structure.sourceLinkCount === 0;
 }
 
 function buildFallbackReportFromItems(items, top20) {
@@ -1781,7 +1783,6 @@ async function generateReport(items, top20, stats, peopleStats) {
     if (createdAt) compact.date = typeof createdAt === 'string' ? createdAt.slice(0, 19) : createdAt;
     return compact;
   });
-  console.log(`Prompt pipeline: rawItems=${items.length}, afterDedup=${promptItems.length}, compactItems=${compactItems.length}`);
   const promptRules = await loadPromptRules();
   const rulesSection = promptRules ? `\n\n## 额外规则（基于历史反馈，必须遵守）\n${promptRules}` : '';
   const prompt = `${getPromptTemplate()}${rulesSection}\n\n话题统计（宏观参考，已按participantCount降序排列）：\n${JSON.stringify(stats, null, 2)}\n\n去重后的原始动态（共${compactItems.length}条）。请你独立判断每条动态的具体主题，然后按主题相似性聚类为具体事件，再根据每个事件涉及的不同人数（participantCount）排序：\n${JSON.stringify(compactItems, null, 2)}`;
@@ -1803,12 +1804,11 @@ async function generateReport(items, top20, stats, peopleStats) {
     );
     const repairPrompt = `${prompt}
 
-上一次输出事件数量严重不足，请重新输出并严格满足：
-- **不要过度聚类！** 每个具体事件（如一个产品发布、一项技术突破、一次融资）应独立输出，不要把不同事件合并成一个大主题
-- TOP3热度事件必须正好3条（编号1-3），每条至少3个相关动态
-- ## 中热度话题下至少5条独立事件（编号1-5+），每个事件单独编号
-- 每条动态都必须包含 [@本名](url) 链接
-- 事件总数至少8条（TOP3 的3条 + 中热度至少5条）`;
+上一次输出结构不达标，请重新输出并严格满足：
+- TOP3热度事件必须正好3条（编号1-3）
+- 中热度话题下至少5条独立事件，每个事件单独编号，不要分Topic
+- 每条动态都必须包含 [@本名](url) 链接；同一人多条推文合并为1条动态
+- 不要跳号（例如 1 后直接到 4）`;
     markdown = await requestGeminiReport({ apiKey, model, prompt: repairPrompt });
     normalized = normalizeMarkdownLayout(markdown);
     withRealNameLinks = relabelSourceLinksWithRealNames(normalized, top20);
@@ -1857,8 +1857,7 @@ async function generateReport(items, top20, stats, peopleStats) {
 - 所有内容必须是中文
 - 每条相关动态必须包含 [@人名](url) 格式的来源链接
 - 从数据中提炼具体事件，不要用笼统的分类名称作为事件标题
-- **不要过度聚类！** 不同事件必须分开输出。事件总数至少8条
-- TOP3 选参与人数最多的3个事件，中热度至少5个独立事件
+- TOP3 选参与人数最多的3个事件，中热度至少5个独立事件，不要分Topic子标题
 
 原始数据（共${compactItems.length}条）：
 ${JSON.stringify(compactItems, null, 2)}`;
