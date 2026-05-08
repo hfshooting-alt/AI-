@@ -1303,14 +1303,19 @@ function markdownToStyledHtml(markdown) {
   };
 
   const renderSecondaryTopicGroup = (topic, idx) => {
-    const topicItems = topic.items.slice(0, 4).map((event, j) => {
+    const topicItems = topic.items.slice(0, 8).map((event, j) => {
       const mergedEvtActions = mergeActionsByHandle(event.actions);
-      const dynamicText = (mergedEvtActions[0] || event.analysis[0] || event.title || '').trim();
-      const sourceLink = (event.sources && event.sources.length > 0) ? event.sources[0] : '';
-      const composed = sourceLink && !dynamicText.includes('http') ? `${dynamicText} ${sourceLink}`.trim() : dynamicText;
-      return `<div style="margin:0 0 10px 0;padding:10px 12px;border:1px solid #E5E7EB;border-radius:8px;background:#FFFFFF;">
-        <div style="font-size:16px;font-weight:700;line-height:1.55;color:#111827;margin-bottom:4px;">动态${j + 1}：${formatInlineMarkdown(event.title)}</div>
-        <div style="font-size:16px;line-height:1.68;color:#4B5563;">${formatInlineMarkdown(composed)}</div>
+      const analysisText = event.analysis.join(' ').trim();
+      const dynamicsList = mergedEvtActions.slice(0, 5)
+        .map((a) => `<li style="margin:0 0 6px 0;color:#111827;font-size:15px;line-height:1.7;">${formatInlineMarkdown(a)}</li>`)
+        .join('');
+      const fallbackLine = !dynamicsList && (event.sources && event.sources.length > 0)
+        ? `<div style="font-size:15px;line-height:1.7;color:#4B5563;">${formatInlineMarkdown(event.sources[0])}</div>`
+        : '';
+      return `<div style="margin:0 0 10px 0;padding:12px 14px;border:1px solid #E5E7EB;border-radius:8px;background:#FFFFFF;">
+        <div style="font-size:16px;font-weight:700;line-height:1.55;color:#111827;margin-bottom:6px;">动态${j + 1}：${formatInlineMarkdown(event.title)}</div>
+        ${analysisText ? `<div style="font-size:15px;line-height:1.7;color:#111827;margin-bottom:8px;"><span style="font-weight:700;">热点解析：</span>${formatInlineMarkdown(analysisText)}</div>` : ''}
+        ${dynamicsList ? `<div style="font-size:14px;font-weight:700;color:#111827;margin:0 0 4px 0;">相关动态：</div><ul style="margin:0;padding-left:20px;">${dynamicsList}</ul>` : fallbackLine}
       </div>`;
     }).join('');
 
