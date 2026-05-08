@@ -2073,7 +2073,7 @@ async function generateReportViaEmbedding({ items, apiKey, model }) {
   const promptItems = buildPromptItems(items);
   if (promptItems.length === 0) return null;
 
-  const embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004';
+  const embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || 'gemini-embedding-001';
   const threshold = Number(process.env.EMBEDDING_CLUSTER_THRESHOLD || 0.72);
   console.log(
     `Embedding clustering: items=${promptItems.length}, model=${embeddingModel}, threshold=${threshold}`,
