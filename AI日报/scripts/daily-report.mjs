@@ -1696,26 +1696,46 @@ function buildFallbackReportFromItems(items, top20) {
     .filter(([, entries]) => entries.length > 0)
     .sort((a, b) => b[1].length - a[1].length);
 
-  // Each topic = one event (no chunking into 扩展N)
-  const eventCandidates = sortedTopics.map(([topic, entries]) => ({
-    topic,
-    title: topic,
-    entries,
-    weight: entries.length,
-  }));
+  // Convert topic buckets into concrete fallback events.  The previous
+  // implementation emitted at most one event per broad hotspot label and then
+  // globally de-duplicated handles across events.  When most tweets matched the
+  // same broad label (for example "开发工具与编程"), the deterministic fallback
+  // collapsed dozens of sourced items into a single card, which made the final
+  // email look like entries were missing.  Keep per-event handle dedup, but allow
+  // a person to appear in different topic/chunk events and split large buckets so
+  // the fallback can still produce TOP3 + 中热度 sections from the available data.
+  const chunkEntries = (entries, size = 5) => {
+    const chunks = [];
+    for (let i = 0; i < entries.length; i += size) {
+      chunks.push(entries.slice(i, i + size));
+    }
+    return chunks;
+  };
 
-  // Cross-event handle dedup: if a person already appeared in a higher-priority event,
-  // remove them from lower-priority events to avoid repetition
-  const globalHandleSeen = new Set();
-  for (const evt of eventCandidates) {
-    evt.entries = evt.entries.filter((e) => {
-      if (globalHandleSeen.has(e.handle)) return false;
-      globalHandleSeen.add(e.handle);
-      return true;
+  const eventCandidates = [];
+  for (const [topic, entries] of sortedTopics) {
+    const chunks = chunkEntries(entries, 5);
+    chunks.forEach((chunk, chunkIndex) => {
+      if (chunk.length === 0) return;
+      eventCandidates.push({
+        topic,
+        title: chunks.length > 1 ? `${topic}（${chunkIndex + 1}）` : topic,
+        entries: chunk,
+        weight: chunk.length,
+        topicRank: sortedTopics.findIndex(([label]) => label === topic),
+        chunkIndex,
+      });
     });
   }
-  // Remove events that lost all entries after cross-dedup
-  const validEvents = eventCandidates.filter((evt) => evt.entries.length > 0);
+
+  const validEvents = eventCandidates
+    .filter((evt) => evt.entries.length > 0)
+    .sort((a, b) => {
+      if (b.weight !== a.weight) return b.weight - a.weight;
+      if (a.topicRank !== b.topicRank) return a.topicRank - b.topicRank;
+      return a.chunkIndex - b.chunkIndex;
+    });
+  console.log(`Fallback event candidates: topics=${sortedTopics.length}, events=${validEvents.length}`);
 
   const buildEventBlock = (title, entries, index) => {
     // Deterministic fallback cannot call Gemini for translation, so generate
