@@ -1845,6 +1845,267 @@ ${secondarySections || '暂无中热度话题。'}
 `;
 }
 
+// ===== Embedding-based clustering pipeline =====
+// Replaces "let Gemini cluster everything in one shot" with a deterministic flow:
+// 1. Embed each tweet with Gemini's embedding model.
+// 2. Greedy cosine clustering — each tweet joins its nearest cluster if above
+//    the similarity threshold; otherwise starts a new cluster.
+// 3. Sort clusters by participantCount (= unique handles), split TOP3 / mid-heat.
+// 4. Send the pre-clustered structure to Gemini and ask it ONLY to write titles,
+//    analyses, and per-tweet descriptions — never to re-cluster, re-rank, or merge.
+// This prevents the model from stuffing unrelated tweets into the same event card.
+
+async function embedTextsBatchOnce(texts, { apiKey, model }) {
+  if (!texts.length) return [];
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:batchEmbedContents?key=${apiKey}`;
+  const requests = texts.map((text) => ({
+    model: `models/${model}`,
+    content: { parts: [{ text }] },
+    taskType: 'CLUSTERING',
+  }));
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60 * 1000);
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests }),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) throw new Error(`Embedding request failed: ${response.status} ${await response.text()}`);
+  const json = await response.json();
+  const embeddings = (json?.embeddings || []).map((e) => e?.values).filter(Array.isArray);
+  if (embeddings.length !== texts.length) {
+    throw new Error(`Embedding response count mismatch: got ${embeddings.length}, expected ${texts.length}`);
+  }
+  return embeddings;
+}
+
+async function embedTextsBatched(texts, { apiKey, model }) {
+  const BATCH = Number(process.env.EMBEDDING_BATCH_SIZE || 100);
+  const out = [];
+  for (let i = 0; i < texts.length; i += BATCH) {
+    const slice = texts.slice(i, i + BATCH);
+    const vecs = await withRetry(
+      () => embedTextsBatchOnce(slice, { apiKey, model }),
+      { label: `embedding batch ${Math.floor(i / BATCH) + 1}`, retries: 2, baseDelayMs: 2000 },
+    );
+    out.push(...vecs);
+  }
+  return out;
+}
+
+function cosineSimilarity(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+function greedyClusterByEmbeddings(items, embeddings, threshold) {
+  const clusters = [];
+  for (let i = 0; i < items.length; i += 1) {
+    const emb = embeddings[i];
+    if (!emb) continue;
+    let bestSim = -1;
+    let bestIdx = -1;
+    for (let c = 0; c < clusters.length; c += 1) {
+      const sim = cosineSimilarity(emb, clusters[c].centroid);
+      if (sim > bestSim) {
+        bestSim = sim;
+        bestIdx = c;
+      }
+    }
+    if (bestSim >= threshold && bestIdx >= 0) {
+      const cluster = clusters[bestIdx];
+      cluster.items.push(items[i]);
+      const n = cluster.items.length;
+      for (let k = 0; k < emb.length; k += 1) {
+        cluster.centroid[k] = (cluster.centroid[k] * (n - 1) + emb[k]) / n;
+      }
+    } else {
+      clusters.push({ centroid: emb.slice(), items: [items[i]] });
+    }
+  }
+  return clusters;
+}
+
+function rankClusters(clusters) {
+  return clusters
+    .map((c) => {
+      const handles = new Set(
+        c.items.map((it) => normalizeHandle(extractHandleFromItem(it))).filter(Boolean),
+      );
+      return { items: c.items, participantCount: handles.size };
+    })
+    .sort((a, b) => {
+      if (b.participantCount !== a.participantCount) return b.participantCount - a.participantCount;
+      return b.items.length - a.items.length;
+    });
+}
+
+function dedupClusterByHandle(cluster) {
+  const seen = new Set();
+  const kept = [];
+  // Sort by text length desc so the longest (most informative) tweet per person wins.
+  const sorted = [...cluster.items].sort(
+    (a, b) => extractTextFromItem(b).length - extractTextFromItem(a).length,
+  );
+  for (const it of sorted) {
+    const h = normalizeHandle(extractHandleFromItem(it));
+    if (!h || seen.has(h)) continue;
+    seen.add(h);
+    kept.push(it);
+  }
+  return { ...cluster, items: kept };
+}
+
+async function composeClustersToMarkdown({ top3Clusters, secondaryClusters, apiKey, model }) {
+  const all = [...top3Clusters, ...secondaryClusters];
+  if (all.length === 0) {
+    return `# AI Pulse - X Daily Brief\n\n## TOP3 热度事件\n\n暂无足够数据生成热度事件。\n\n## 中热度话题\n\n暂无中热度话题。\n`;
+  }
+
+  const promptInput = all.map((cluster, i) => ({
+    i,
+    tweets: cluster.items.slice(0, 8).map((it) => ({
+      handle: extractHandleFromItem(it),
+      url: it?.url || it?.tweetUrl || it?.link || '',
+      text: extractTextFromItem(it).slice(0, 400),
+    })),
+  }));
+
+  const compositionPrompt = `下列每个对象是一个"已聚类好的事件簇 (cluster)"，由向量聚类算法生成。
+你的任务**只是**为每个 cluster 生成中文文案；**严禁**：
+- 把不同 cluster 的推文混到同一个事件
+- 把一个 cluster 拆成多个事件
+- 凭空增加输入里没有的推文
+- 输出参与人数等统计数字
+
+对每个 cluster，按它实际共同的主题，生成：
+- title：10-20字中文事件标题，必须忠实反映这个 cluster 的共同主题
+- analysis：1-2句中文热点解析，说明事件的业务/行业意义
+- dynamics：数组，对应输入 tweets 数组里的每条推文（同顺序），每条用一句简短中文描述该作者在这条推文里的具体观点
+
+严格只用 JSON 数组返回（不要 markdown 包装、不要解释）：
+[
+  {
+    "i": 0,
+    "title": "...",
+    "analysis": "...",
+    "dynamics": [
+      {"handle": "...", "url": "...", "description": "..."}
+    ]
+  }
+]
+
+输入聚类（共 ${all.length} 个事件，编号 0 到 ${all.length - 1}）：
+${JSON.stringify(promptInput, null, 2)}`;
+
+  const responseText = await requestGeminiReport({ apiKey, model, prompt: compositionPrompt });
+  const cleaned = String(responseText || '')
+    .replace(/^```(?:json)?\s*/im, '')
+    .replace(/```\s*$/im, '')
+    .trim();
+  const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+  const composed = JSON.parse(arrayMatch ? arrayMatch[0] : cleaned);
+  if (!Array.isArray(composed)) throw new Error('cluster composition response is not an array');
+
+  const byIndex = new Map();
+  for (const c of composed) {
+    const idx = Number(c?.i);
+    if (Number.isInteger(idx)) byIndex.set(idx, c);
+  }
+
+  const renderEventBlock = (cluster, displayIndex, composedItem) => {
+    const c = composedItem || {};
+    const dynamics = Array.isArray(c.dynamics) ? c.dynamics : [];
+    // Match composed dynamics back to actual tweets in cluster order; fall back
+    // to handle/url from the cluster if the model omitted fields.
+    const dynamicLines = cluster.items.slice(0, 5).map((tweet, k) => {
+      const d = dynamics[k] || {};
+      const handle = String(d.handle || extractHandleFromItem(tweet) || '').replace(/^@/, '');
+      const url = d.url || tweet?.url || tweet?.tweetUrl || tweet?.link || '';
+      const description = String(d.description || '').trim()
+        || extractTextFromItem(tweet).slice(0, 120);
+      return `     - [@${handle}](${url}): ${description}`;
+    }).join('\n');
+    return `${displayIndex}. ${c.title || '事件'}
+   - **热点解析：** ${c.analysis || '今日核心动态持续演进。'}
+   - **相关动态：**
+${dynamicLines}`;
+  };
+
+  const top3Sections = top3Clusters
+    .map((cl, i) => renderEventBlock(cl, i + 1, byIndex.get(i)))
+    .join('\n\n');
+  const secondarySections = secondaryClusters
+    .map((cl, j) => renderEventBlock(cl, j + 1, byIndex.get(top3Clusters.length + j)))
+    .join('\n\n');
+
+  return `# AI Pulse - X Daily Brief
+
+## TOP3 热度事件
+
+${top3Sections || '暂无足够数据生成热度事件。'}
+
+## 中热度话题
+
+### 其他重要动态
+
+${secondarySections || '暂无中热度话题。'}
+`;
+}
+
+async function generateReportViaEmbedding({ items, apiKey, model }) {
+  const promptItems = buildPromptItems(items);
+  if (promptItems.length === 0) return null;
+
+  const embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004';
+  const threshold = Number(process.env.EMBEDDING_CLUSTER_THRESHOLD || 0.7);
+  console.log(
+    `Embedding clustering: items=${promptItems.length}, model=${embeddingModel}, threshold=${threshold}`,
+  );
+
+  const texts = promptItems.map((item) => extractTextFromItem(item).slice(0, 1000) || ' ');
+  const embeddings = await embedTextsBatched(texts, { apiKey, model: embeddingModel });
+
+  const rawClusters = greedyClusterByEmbeddings(promptItems, embeddings, threshold);
+  console.log(
+    `Embedding clustering: ${rawClusters.length} raw clusters from ${promptItems.length} tweets`,
+  );
+
+  const ranked = rankClusters(rawClusters);
+  const top3 = ranked.slice(0, Math.min(3, ranked.length)).map(dedupClusterByHandle);
+  const maxSecondary = Number(process.env.SECONDARY_EVENT_LIMIT || 10);
+  const secondary = ranked
+    .slice(top3.length, top3.length + maxSecondary)
+    .map(dedupClusterByHandle)
+    .filter((cl) => cl.items.length > 0);
+
+  console.log(
+    `Embedding clustering: top3 sizes=${top3.map((c) => c.participantCount).join(',')}, secondary=${secondary.length} events`,
+  );
+
+  return composeClustersToMarkdown({
+    top3Clusters: top3,
+    secondaryClusters: secondary,
+    apiKey,
+    model,
+  });
+}
+
 async function generateReport(items, top20, stats, peopleStats) {
   if (!Array.isArray(items) || items.length === 0) {
     return `# AI Pulse - X Daily Brief\n\n今日无可用AI相关内容。\n`;
@@ -1853,6 +2114,33 @@ async function generateReport(items, top20, stats, peopleStats) {
   const apiKey = requireEnv('GEMINI_API_KEY');
   const model = requireEnv('GEMINI_MODEL');
   console.log(`Using GEMINI_MODEL=${model}`);
+
+  // NEW PATH: try embedding-based clustering first. If it succeeds, skip the
+  // legacy "let Gemini cluster everything in one shot" path.
+  const useEmbedding = parseBooleanEnv(process.env.REPORT_USE_EMBEDDING_CLUSTER, true);
+  if (useEmbedding) {
+    try {
+      const embeddingMarkdown = await generateReportViaEmbedding({ items, apiKey, model });
+      if (embeddingMarkdown) {
+        const embNormalized = normalizeMarkdownLayout(embeddingMarkdown);
+        const embWithRealNameLinks = relabelSourceLinksWithRealNames(embNormalized, top20);
+        const embReportBody = appendTop20Appendix(embWithRealNameLinks, top20, peopleStats);
+        const embStructure = analyzeReportStructure(embReportBody);
+        console.log(
+          `Embedding-flow structure stats: top3=${embStructure.top3EventCount}, secondary=${embStructure.secondaryEventCount}, sourceLinks=${embStructure.sourceLinkCount}`,
+        );
+        if (embStructure.top3EventCount > 0 && embStructure.sourceLinkCount > 0) {
+          console.log('Generating Today\'s Summary based on embedding-flow report...');
+          const embSummary = await generateSummary({ apiKey, model, reportMarkdown: embReportBody });
+          const cleaned = embReportBody.replace(/## Today's Summary[\s\S]*?(?=\n## |\n---|\n\*\*|$)/, '').trimEnd();
+          return `${cleaned}\n\n${embSummary.trim()}\n`;
+        }
+        console.warn('Embedding-flow output looked weak; falling back to legacy clustering prompt.');
+      }
+    } catch (err) {
+      console.warn(`Embedding-flow report failed: ${err.message}. Falling back to legacy clustering prompt.`);
+    }
+  }
 
   const promptItems = buildPromptItems(items);
 
