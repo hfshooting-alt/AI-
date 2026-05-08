@@ -455,6 +455,95 @@ function isAiRelatedItem(item) {
   return weakHits >= 1;
 }
 
+// Hybrid AI-relevance filter:
+// 1. Items that match the keyword filter pass through immediately (zero cost).
+// 2. Items that don't match are sent to Gemini in batches for a judgment call —
+//    catches new product names, implicit references, and "AI-adjacent" tweets
+//    that the keyword list can't anticipate. Failures fall back to dropping
+//    the borderline batch (same behavior as the keyword-only filter).
+async function recheckBoundaryItemsWithGemini(borderlineItems) {
+  if (!borderlineItems || borderlineItems.length === 0) return [];
+  if (!parseBooleanEnv(process.env.REPORT_BOUNDARY_FILTER_ENABLED, true)) {
+    console.log(`Boundary filter disabled via REPORT_BOUNDARY_FILTER_ENABLED. Dropping ${borderlineItems.length} borderline items.`);
+    return [];
+  }
+  const apiKey = process.env.GEMINI_API_KEY;
+  const model = process.env.GEMINI_FILTER_MODEL || process.env.GEMINI_MODEL;
+  if (!apiKey || !model) {
+    console.warn('Boundary filter skipped: GEMINI_API_KEY / GEMINI_MODEL not set.');
+    return [];
+  }
+  const BATCH_SIZE = Number(process.env.REPORT_BOUNDARY_FILTER_BATCH_SIZE || 50);
+  const batches = [];
+  for (let i = 0; i < borderlineItems.length; i += BATCH_SIZE) {
+    batches.push(borderlineItems.slice(i, i + BATCH_SIZE));
+  }
+  console.log(`Boundary filter: rechecking ${borderlineItems.length} items via Gemini (${batches.length} batches, model=${model})`);
+
+  const kept = [];
+  let totalDropped = 0;
+  let totalFailed = 0;
+  for (let bIdx = 0; bIdx < batches.length; bIdx += 1) {
+    const batch = batches[bIdx];
+    const compactList = batch.map((item, idx) => ({
+      i: idx,
+      handle: extractHandleFromItem(item) || '',
+      text: extractTextFromItem(item).slice(0, 400),
+    }));
+    const prompt = `你是AI行业分析师。请用你的判断力，对下列每条推文判断它是否属于"AI 行业有信息价值的动态"。
+判断口径（凭你的主人公意识，不需要硬性命中关键词）：
+- 与AI模型/产品/研究/团队/算力/芯片/工具链/Agent/机器人/政策/行业资本等任意角度有实质关联即算 true
+- 即使没有 AI 关键词，但讨论开发者工作流、新产品、技术趋势等对 AI 从业者有信息价值的内容也算 true
+- 纯生活分享、股市行情、广告、与AI无关的八卦、纯转发不带任何观点等返回 false
+
+严格只用 JSON 数组返回，不要解释、不要任何 markdown 包装：
+[{"i":0,"ai":true},{"i":1,"ai":false}]
+
+推文列表：
+${JSON.stringify(compactList, null, 2)}`;
+    try {
+      const text = await requestGeminiReportOnce({ apiKey, model, prompt });
+      const cleaned = String(text || '')
+        .replace(/^```(?:json)?\s*/im, '')
+        .replace(/```\s*$/im, '')
+        .trim();
+      const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+      const decisions = JSON.parse(arrayMatch ? arrayMatch[0] : cleaned);
+      if (!Array.isArray(decisions)) throw new Error('response is not a JSON array');
+      const decided = new Set();
+      for (const d of decisions) {
+        const idx = Number(d?.i);
+        if (Number.isInteger(idx) && idx >= 0 && idx < batch.length) {
+          decided.add(idx);
+          if (d?.ai === true) kept.push(batch[idx]);
+          else totalDropped += 1;
+        }
+      }
+      // Items with no decision returned: be conservative, drop them (same as today).
+      const undecided = batch.length - decided.size;
+      if (undecided > 0) totalDropped += undecided;
+    } catch (err) {
+      console.warn(`Boundary filter batch ${bIdx + 1}/${batches.length} failed: ${err.message}. Dropping ${batch.length} items.`);
+      totalFailed += batch.length;
+      totalDropped += batch.length;
+    }
+  }
+  console.log(`Boundary filter result: borderline=${borderlineItems.length}, kept=${kept.length}, dropped=${totalDropped} (of which batch_failed=${totalFailed})`);
+  return kept;
+}
+
+async function filterAiRelatedItems(items) {
+  const passList = [];
+  const borderline = [];
+  for (const item of items || []) {
+    if (isAiRelatedItem(item)) passList.push(item);
+    else borderline.push(item);
+  }
+  if (borderline.length === 0) return passList;
+  const recovered = await recheckBoundaryItemsWithGemini(borderline);
+  return [...passList, ...recovered];
+}
+
 // Rules are ordered from MOST SPECIFIC to LEAST SPECIFIC so that classifyHotspots
 // returns the most meaningful label first.  Broad catch-all categories go last.
 const HOTSPOT_RULES = [
@@ -1378,19 +1467,21 @@ function getPromptTemplate() {
 
 # AI Pulse - X Daily Brief
 
-## 聚类核心规则（必须遵守）
-- **先逐条判断每条动态的具体主题**（例如”Claude 4发布”、”GPU供应链紧张”、”Cursor融资”等具体事件），而不是直接按预设大类归并
-- **然后将主题相同或高度相关的动态聚类为一个”事件”**
-- **每个事件的热度 = 涉及的不同人数（participantCount）**，即有多少个不同的人讨论了这个具体事件
+## 你的角色与判断口径
+你是这份日报的主笔。请用你自己的判断力来挑选事件、组织内容，而不是僵硬地数数。
+- **先用你的判断力筛掉噪声**：纯生活/股市/广告/与AI无关的八卦/纯转发不带观点等，请直接忽略，不要进入聚类
+- **再逐条判断每条动态的具体主题**（例如"Claude 4发布"、"GPU供应链紧张"、"Cursor融资"等具体事件），而不是直接按预设大类归并
+- **然后将主题相同或高度相关的动态聚类为一个"事件"**
 - 同一个人发多条推文/引用/回复关于同一事件，只算1个参与者
-- 提供的话题统计仅作宏观参考，不要直接用其分类结果，请你独立从数据中发现具体事件
-- **输出中不要显示参与人数、participantCount 等统计数字，只用于排序**
+- 提供的话题统计仅作宏观参考，不要直接套用其分类结果，请你独立从数据中发现具体事件
+- 排序时参与人数（participantCount）是重要参考，但你也可以结合事件本身的信息价值、新颖度做最终判断
+- **输出中不要显示参与人数、participantCount 等统计数字**
 
-## 输出格式（严格遵守）
+## 输出格式
 
 ### TOP3热度事件
-从聚类结果中选出参与人数最多的3个具体事件。
-**每条TOP3事件至少包含3条相关动态，每条动态必须有来源链接。**
+从聚类结果中选出你判断为今日最重要的 3 个具体事件（参与人数是首要参考）。
+每条事件下面挑出最具代表性的相关动态（建议 3-5 条；你来决定取舍），每条动态都要带来源链接。
 
 \`\`\`
 ## TOP3 热度事件
@@ -1418,12 +1509,12 @@ function getPromptTemplate() {
 \`\`\`
 
 ### 中热度事件
-从剩余聚类结果中，选出参与人数次高的事件，共输出7-12条事件，分成2-4个Topic。
-**每条事件都是一个具体的、独立的事件（如一个产品发布、一项研究突破、一次融资），而不是笼统的大类。**
-**跨Topic排列规则：包含更高参与人数事件的Topic排在前面。**
-**每个Topic内的事件也必须严格按参与人数从高到低排列。**
-**每个Topic至少包含2条事件，每条事件至少包含2条相关动态。**
-**即使只有1个人提到的独立事件，如果有足够信息价值，也可以作为中热度事件输出（放在靠后的Topic中）。**
+从剩余聚类结果里，按你的判断挑出今日值得读者了解的事件，作为 TOP3 之外的延伸阅读。
+- 数量由你决定，建议 7-12 条事件，分成 2-4 个 Topic；如果数据不足也不要凑数
+- 每条事件必须是具体、独立的事件（一个产品发布、一项研究突破、一次融资等），不要写成笼统大类
+- Topic 排序、Topic 内事件排序都按你判断的重要性来（参与人数是重要参考但不是唯一标准）
+- 每条事件下面挑出 2-5 条最具代表性的相关动态（你来决定）；只有 1 条来源也允许，不必凑数
+- 即使只有 1 个人提到的独立事件，如果有信息价值，也可以放在靠后的 Topic 中
 
 \`\`\`
 ## 中热度话题
@@ -1449,15 +1540,18 @@ function getPromptTemplate() {
      - [@本名](url): 动态描述…
 \`\`\`
 
-### 通用规则
-- 不需要按传统行业大类分类，请根据数据内容自行发现具体事件
-- **关键约束：同一事件内，如果同一个人（@handle）有多条相关推文，请将它们合并为1条动态，综合描述该人的多条观点。** 每条动态代表一个不同人的视角
-- 不要输出”聚类一/二/三”字样；不要输出”额外观察”与”AI大厂与投资机构资讯”板块
-- 关联动态中的来源链接，不使用”查看原帖”，统一写成 [@本名](url)（本名不是X用户名）
-- **【强制】每条”相关动态”都必须包含来源链接 [@本名](url)，没有来源链接的动态不要输出。每条动态的格式必须是： - [@本名](url): 描述文字… ，冒号前面是来源链接，冒号后面是描述。**
-- **每条事件的”相关动态”尽量2条以上。允许只有1个来源的事件单独列出，不需要强制合并。事件总数量宜多不宜少，中热度话题至少覆盖4-8条事件。**
-- **不要输出 Today's Summary 板块**，Summary将在报告生成后单独生成
-- 输出Markdown，结构清晰，分级列表明确
+### 通用规则（这部分是下游解析的硬约束，请严格遵守）
+- 输出整体结构必须是 \`## TOP3 热度事件\` 与 \`## 中热度话题\` 两个二级标题
+- 每条相关动态的格式必须是 \`- [@本名](url): 描述文字…\`（冒号前是来源链接，没有来源链接的动态不要输出）
+- 同一事件内同一个人的多条推文必须合并为 1 条动态，综合该人观点；每条动态代表一个不同的人
+- 来源链接里写本名（不是 X 用户名）
+- 不要输出"聚类一/二/三"字样、"额外观察"、"AI大厂与投资机构资讯"等板块
+- 不要输出 Today's Summary 板块（Summary 将在报告生成后单独生成）
+- 输出 Markdown，分级列表明确
+
+### 风格建议（你来把握）
+- 不需要按传统行业大类分类，请独立从数据中发现具体事件
+- 数量、长度、详略请用你的判断力，目标是让一个 AI 行业从业者一眼看到当天最值得知道的事
 `;
 }
 
@@ -2366,8 +2460,9 @@ async function main() {
   dailyItems = filterItemsByBjtDateRange(dailyItems, dailyTargetSince, dailyTargetUntil);
   console.log(`Daily items after precise BJT date filter [${dailyTargetSince}, ${dailyTargetUntil}): ${dailyItems.length}`);
 
-  const aiRelatedDaily = dailyItems.filter(isAiRelatedItem);
-  console.log(`Daily items: ${dailyItems.length}, AI-related: ${aiRelatedDaily.length}`);
+  const keywordHits = dailyItems.filter(isAiRelatedItem).length;
+  const aiRelatedDaily = await filterAiRelatedItems(dailyItems);
+  console.log(`Daily items: ${dailyItems.length}, AI-related: ${aiRelatedDaily.length} (keyword=${keywordHits}, recovered_via_gemini=${aiRelatedDaily.length - keywordHits})`);
 
   // Generate full action sheet (ALL daily items from TOP20, grouped by topic)
   // This runs independently and doesn't affect the daily report pipeline
