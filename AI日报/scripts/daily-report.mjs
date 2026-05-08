@@ -1654,19 +1654,133 @@ function analyzeReportStructure(markdown) {
 }
 
 function isStructureWeak(structure) {
-  const totalEvents = structure.top3EventCount + structure.secondaryEventCount;
-  return totalEvents < 5 || structure.sourceLinkCount === 0;
+  // README requires exactly 3 TOP3热点 + at least 5 middle-heat events.
+  // Treat reports with a non-empty but incomplete TOP3 as weak; otherwise the
+  // renderer can legitimately output only one core hotspot even when enough
+  // sourced daily items are available.
+  return structure.top3EventCount < 3 || structure.secondaryEventCount < 5 || structure.sourceLinkCount === 0;
+}
+
+function cleanTweetTextForSummary(text, maxLen = 220) {
+  const cleaned = String(text || '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^RT\s+@\w+[:：]\s*/i, '')
+    .trim();
+  if (cleaned.length <= maxLen) return cleaned;
+  return `${cleaned.slice(0, maxLen - 1).trim()}…`;
+}
+
+function extractFallbackEntities(text) {
+  const raw = String(text || '');
+  const lower = raw.toLowerCase();
+  const entityRules = [
+    ['OpenAI / ChatGPT', /\b(openai|chatgpt|gpt[-\s]?\d+|gpt|o[134]|sora)\b/i],
+    ['Anthropic / Claude', /\b(anthropic|claude|sonnet|opus|haiku)\b/i],
+    ['Google Gemini / DeepMind', /\b(gemini|deepmind|google ai|alphafold|veo)\b/i],
+    ['xAI / Grok', /\b(xai|x\.ai|grok)\b/i],
+    ['Meta Llama', /\b(meta ai|llama)\b/i],
+    ['Mistral', /\bmistral\b/i],
+    ['DeepSeek', /\bdeepseek\b/i],
+    ['Qwen', /\b(qwen|通义千问)\b/i],
+    ['Hugging Face', /\b(hugging\s*face|huggingface)\b/i],
+    ['Cursor', /\bcursor\b/i],
+    ['Windsurf', /\bwindsurf\b/i],
+    ['GitHub Copilot', /\b(copilot|github copilot)\b/i],
+    ['Replit', /\breplit\b/i],
+    ['Perplexity', /\bperplexity\b/i],
+    ['NVIDIA / GPU', /\b(nvidia|gpu|cuda|blackwell|h100|h200|b200|gb200|芯片|算力)\b/i],
+    ['机器人 / 具身智能', /\b(robot|robotics|humanoid|optimus|embodied)\b|机器人|具身/i],
+    ['Agent / MCP', /\b(agent|agents|agentic|mcp|tool use|function calling|workflow)\b|智能体|自动化/i],
+    ['多模态 / 视频图像', /\b(multimodal|vision|video|image|diffusion|text-to-image|text-to-video)\b|多模态|视觉|视频|图像/i],
+    ['开源模型', /\b(open source|opensource|oss|weights|model weights)\b|开源|权重/i],
+    ['AI 安全治理', /\b(safety|alignment|policy|regulation|governance|risk)\b|安全|治理|监管|对齐/i],
+    ['融资 / 商业化', /\b(funding|raises|raised|valuation|revenue|pricing|startup|customers|enterprise)\b|融资|估值|商业化|定价|客户/i],
+  ];
+
+  const entities = [];
+  for (const [label, pattern] of entityRules) {
+    if (pattern.test(raw) && !entities.includes(label)) entities.push(label);
+  }
+
+  const hashtags = Array.from(raw.matchAll(/#([\p{L}\p{N}_-]{2,30})/gu)).map((m) => m[1]);
+  for (const tag of hashtags) {
+    if (entities.length >= 4) break;
+    if (!entities.some((e) => e.toLowerCase() === tag.toLowerCase())) entities.push(tag);
+  }
+
+  // Add a few salient title-case product/company tokens as a last resort, but
+  // avoid common social-media words that do not define an event.
+  const stop = new Set(['The', 'This', 'That', 'There', 'Here', 'With', 'From', 'Into', 'What', 'When', 'Your', 'You', 'New', 'Today', 'AI', 'LLM']);
+  const caps = Array.from(raw.matchAll(/\b[A-Z][A-Za-z0-9_.-]{2,24}\b/g)).map((m) => m[0]);
+  for (const token of caps) {
+    if (entities.length >= 4) break;
+    if (stop.has(token)) continue;
+    if (lower.includes(token.toLowerCase()) && !entities.some((e) => e.toLowerCase().includes(token.toLowerCase()))) {
+      entities.push(token);
+    }
+  }
+
+  return entities;
+}
+
+function getFallbackClusterKey(entry) {
+  const entities = entry.entities || [];
+  // Cluster around the most concrete entity first (company/product/model), so
+  // related OpenAI/Claude/Cursor/etc. tweets become one event even when their
+  // secondary keywords differ.  Broad hotspot labels are only a fallback.
+  if (entities.length > 0) return `entity::${entities[0]}`;
+  const words = cleanTweetTextForSummary(entry.text, 120)
+    .toLowerCase()
+    .replace(/[^\w\u4e00-\u9fff]+/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length >= 4 && !['this', 'that', 'with', 'from', 'have', 'will', 'about', 'https', 'today'].includes(w))
+    .slice(0, 3);
+  return `${entry.primaryTopic}::${words.join('+') || entry.handle}`;
+}
+
+function buildFallbackTitle(cluster, index) {
+  const entityTitle = Array.from(new Set(cluster.entries.flatMap((e) => e.entities || []))).slice(0, 3).join('、');
+  if (entityTitle) return `${entityTitle}相关进展`;
+  if (cluster.topic && cluster.topic !== '其他AI动态') return `${cluster.topic}相关进展`;
+  const snippet = cleanTweetTextForSummary(cluster.entries[0]?.text || '', 34).replace(/[。.!?！？].*$/, '');
+  return snippet ? `重点AI动态：${snippet}` : `重点AI动态 ${index}`;
+}
+
+function buildFallbackDynamicDescription(entry, title) {
+  const snippet = cleanTweetTextForSummary(entry.text, 180);
+  if (!snippet) return `围绕「${title}」发布了相关动态，需点击来源查看完整上下文。`;
+  return `围绕「${title}」提到：${snippet}`;
+}
+
+function buildFallbackAnalysis(title, entries) {
+  const participantNames = entries.slice(0, 4).map((e) => e.name).join('、');
+  const suffix = entries.length > 4 ? '等' : '';
+  const entities = Array.from(new Set(entries.flatMap((e) => e.entities || []))).slice(0, 4);
+  const entityText = entities.length > 0 ? `，集中涉及 ${entities.join('、')}` : '';
+  const representative = cleanTweetTextForSummary(entries[0]?.text || '', 120);
+  return `该事件由 ${participantNames}${suffix} 等 ${entries.length} 个不同来源共同构成${entityText}。聚类依据是多条原始动态在关键词、产品/公司实体或语义主题上的重合；代表性信号为「${representative}」。建议优先点击来源核验原文细节，再判断其对产品、技术路线或竞争格局的影响。`;
+}
+
+function splitFallbackClustersUntilMinimum(clusters, minEvents) {
+  const result = clusters.map((cluster) => ({ ...cluster, entries: [...cluster.entries] }));
+  while (result.length < minEvents) {
+    const idx = result.findIndex((cluster) => cluster.entries.length >= 4);
+    if (idx < 0) break;
+    const cluster = result[idx];
+    const half = Math.ceil(cluster.entries.length / 2);
+    const left = { ...cluster, entries: cluster.entries.slice(0, half), splitPart: 1 };
+    const right = { ...cluster, entries: cluster.entries.slice(half), splitPart: 2 };
+    result.splice(idx, 1, left, right);
+  }
+  return result;
 }
 
 function buildFallbackReportFromItems(items, top20) {
   console.log('fallback zh dynamic mode enabled');
   const nameMap = new Map((top20 || []).map((p) => [normalizeHandle(p.handle), p.name || p.handle]));
 
-  // Group items by topic with load-balanced assignment:
-  // When a tweet matches multiple topics, assign it to the LEAST populated bucket
-  // to ensure items are distributed across topics instead of all piling into one.
-  const topicBuckets = new Map();
-  const globalHandleTopics = new Map(); // handle → Set of topics already assigned
+  const entries = [];
   for (const item of items || []) {
     const handle = normalizeHandle(extractHandleFromItem(item));
     if (!handle) continue;
@@ -1674,98 +1788,96 @@ function buildFallbackReportFromItems(items, top20) {
     const url = item?.url || item?.tweetUrl || item?.link || '';
     if (!text || !url) continue;
     const labels = classifyHotspots(text);
-    // Pick the matching label with the fewest current entries (load balancing)
-    let bestLabel = labels[0] || '其他AI动态';
-    let minCount = Infinity;
-    for (const label of labels) {
-      const count = topicBuckets.get(label)?.length || 0;
-      if (count < minCount) {
-        minCount = count;
-        bestLabel = label;
-      }
-    }
-    const topic = bestLabel;
-    if (!topicBuckets.has(topic)) topicBuckets.set(topic, []);
-    // Per-topic handle dedup
-    if (topicBuckets.get(topic).some((e) => e.handle === handle)) continue;
-    topicBuckets.get(topic).push({ handle, name: nameMap.get(handle) || handle, text: text.slice(0, 150), url });
-  }
-
-  // Sort topics by participant count (most participants first)
-  const sortedTopics = Array.from(topicBuckets.entries())
-    .filter(([, entries]) => entries.length > 0)
-    .sort((a, b) => b[1].length - a[1].length);
-
-  // Convert topic buckets into concrete fallback events.  The previous
-  // implementation emitted at most one event per broad hotspot label and then
-  // globally de-duplicated handles across events.  When most tweets matched the
-  // same broad label (for example "开发工具与编程"), the deterministic fallback
-  // collapsed dozens of sourced items into a single card, which made the final
-  // email look like entries were missing.  Keep per-event handle dedup, but allow
-  // a person to appear in different topic/chunk events and split large buckets so
-  // the fallback can still produce TOP3 + 中热度 sections from the available data.
-  const chunkEntries = (entries, size = 5) => {
-    const chunks = [];
-    for (let i = 0; i < entries.length; i += size) {
-      chunks.push(entries.slice(i, i + size));
-    }
-    return chunks;
-  };
-
-  const eventCandidates = [];
-  for (const [topic, entries] of sortedTopics) {
-    const chunks = chunkEntries(entries, 5);
-    chunks.forEach((chunk, chunkIndex) => {
-      if (chunk.length === 0) return;
-      eventCandidates.push({
-        topic,
-        title: chunks.length > 1 ? `${topic}（${chunkIndex + 1}）` : topic,
-        entries: chunk,
-        weight: chunk.length,
-        topicRank: sortedTopics.findIndex(([label]) => label === topic),
-        chunkIndex,
-      });
+    const entities = extractFallbackEntities(text);
+    const primaryTopic = labels.find((label) => label !== '其他AI动态') || labels[0] || '其他AI动态';
+    entries.push({
+      handle,
+      name: nameMap.get(handle) || handle,
+      text,
+      url,
+      labels,
+      entities,
+      primaryTopic,
+      clusterKey: '',
     });
   }
 
-  const validEvents = eventCandidates
-    .filter((evt) => evt.entries.length > 0)
+  // Build specific fallback clusters from the original tweet content.  README's
+  // intended flow is: judge every dynamic's concrete theme first, cluster related
+  // dynamics into events, then pick the 3 events with the most participants.  This
+  // fallback mirrors that flow without calling Gemini: it clusters by concrete
+  // entities/keywords and only uses broad hotspot labels as a secondary signal.
+  const clusterMap = new Map();
+  for (const entry of entries) {
+    entry.clusterKey = getFallbackClusterKey(entry);
+    if (!clusterMap.has(entry.clusterKey)) {
+      clusterMap.set(entry.clusterKey, {
+        key: entry.clusterKey,
+        topic: entry.primaryTopic,
+        entries: [],
+        handles: new Set(),
+      });
+    }
+    const cluster = clusterMap.get(entry.clusterKey);
+    const existing = cluster.entries.find((e) => e.handle === entry.handle);
+    if (existing) {
+      // Same person + same concrete fallback event: merge the shorter/newer view
+      // into one source entry, matching the prompt rule that one person should be
+      // represented once per event.
+      existing.text = `${existing.text} / ${entry.text}`.slice(0, 420);
+      if (!existing.entities || existing.entities.length === 0) existing.entities = entry.entities;
+    } else {
+      cluster.entries.push(entry);
+      cluster.handles.add(entry.handle);
+    }
+  }
+
+  let clusters = Array.from(clusterMap.values())
+    .filter((cluster) => cluster.entries.length > 0)
+    .sort((a, b) => {
+      if (b.handles.size !== a.handles.size) return b.handles.size - a.handles.size;
+      return b.entries.length - a.entries.length;
+    });
+
+  // If keyword clustering is still too coarse, split the largest clusters so the
+  // final report can satisfy the required TOP3 + middle-heat structure.  These
+  // are still sourced, content-based sub-clusters, not empty placeholders.
+  clusters = splitFallbackClustersUntilMinimum(clusters, Math.min(8, entries.length));
+
+  const eventCandidates = clusters
+    .map((cluster, i) => ({
+      ...cluster,
+      title: buildFallbackTitle(cluster, i + 1),
+      weight: new Set(cluster.entries.map((e) => e.handle)).size,
+    }))
     .sort((a, b) => {
       if (b.weight !== a.weight) return b.weight - a.weight;
-      if (a.topicRank !== b.topicRank) return a.topicRank - b.topicRank;
-      return a.chunkIndex - b.chunkIndex;
+      return b.entries.length - a.entries.length;
     });
-  console.log(`Fallback event candidates: topics=${sortedTopics.length}, events=${validEvents.length}`);
 
-  const buildEventBlock = (title, entries, index) => {
-    // Deterministic fallback cannot call Gemini for translation, so generate
-    // Chinese descriptions by summarizing the tweet context in Chinese.
-    const dynamics = entries
+  console.log(`Fallback event candidates: inputEntries=${entries.length}, events=${eventCandidates.length}`);
+
+  const buildEventBlock = (event, index) => {
+    const dynamics = event.entries
       .slice(0, 5)
-      .map((e) => `     - [@${e.name}](${e.url}): 发布了关于${title}的推文，讨论了相关技术进展与行业动态。`)
+      .map((e) => `     - [@${e.name}](${e.url}): ${buildFallbackDynamicDescription(e, event.title)}`)
       .join('\n');
-    const names = entries.slice(0, 3).map((e) => e.name).join('、');
-    const namesSuffix = entries.length > 3 ? '等' : '';
-    return `${index}. ${title}
-   - **热点解析：** ${title}方向今日有${names}${namesSuffix}共${entries.length}位活跃账号发布相关动态，建议结合原文判断对业务的影响。
+    return `${index}. ${event.title}
+   - **热点解析：** ${buildFallbackAnalysis(event.title, event.entries)}
    - **相关动态：**
 ${dynamics}`;
   };
 
-  const top3Candidates = validEvents.slice(0, Math.min(3, validEvents.length));
-  const secondaryCandidates = validEvents.slice(3, Math.min(11, validEvents.length));
+  const top3Candidates = eventCandidates.slice(0, Math.min(3, eventCandidates.length));
+  const secondaryCandidates = eventCandidates.slice(3, Math.min(15, eventCandidates.length));
 
   const top3Sections = top3Candidates
-    .map((evt, i) => buildEventBlock(evt.title, evt.entries, i + 1))
+    .map((evt, i) => buildEventBlock(evt, i + 1))
     .join('\n\n');
   const secondarySections = secondaryCandidates
-    .map((evt, i) => (
-      `### ${evt.topic}\n\n${buildEventBlock(evt.title, evt.entries, i + 1)}`
-    ))
+    .map((evt, i) => buildEventBlock(evt, i + 1))
     .join('\n\n');
 
-  // Do NOT generate placeholder events (e.g. "事件补充/暂无可用来源") —
-  // they get parsed as real events and borrowed into top3, creating garbage cards.
   return `# AI Pulse - X Daily Brief
 
 ## TOP3 热度事件
@@ -1777,6 +1889,7 @@ ${top3Sections || '暂无足够数据生成热度事件。'}
 ${secondarySections || '暂无中热度话题。'}
 `;
 }
+
 
 async function generateReport(items, top20, stats, peopleStats) {
   if (!Array.isArray(items) || items.length === 0) {
