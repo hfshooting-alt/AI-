@@ -411,14 +411,14 @@ function getDailyAiCoverage(items) {
   return { aiItems, aiCount: aiItems.length, aiHandleCount: aiHandles.size };
 }
 
-function aiRelevanceTier(item) {
+function isAiRelatedItem(item) {
   const text = extractTextFromItem(item);
-  if (!text) return 'none';
+  if (!text) return false;
   const lower = text.toLowerCase();
 
   // Chinese keywords — any single match is a strong signal
   const cnStrong = ['人工智能', '大模型', '智能体', '机器学习', '深度学习', '神经网络', '生成式', 'AI应用', 'AI产品'];
-  if (cnStrong.some((k) => lower.includes(k))) return 'strong';
+  if (cnStrong.some((k) => lower.includes(k))) return true;
 
   // Chinese weak — need context (e.g. "推理" alone could mean logical reasoning in non-AI context)
   const cnWeak = ['推理', '算力', '芯片', '训练', '模型', '数据集', '自动化'];
@@ -444,22 +444,15 @@ function aiRelevanceTier(item) {
   ];
 
   // Strong English: any single hit is enough
-  if (enStrong.some((k) => new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text))) return 'strong';
+  if (enStrong.some((k) => new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text))) return true;
 
-  // Weak scoring: any hit puts the item in the "weak" tier — caller should verify
-  // with Gemini whether AI is actually the central topic (e.g. a tweet about TSMC
-  // hiring may match "chip" but isn't really an AI story).
+  // Weak scoring: single hit is enough since these items come from curated AI-focused accounts
   let weakHits = 0;
   for (const k of cnWeak) { if (lower.includes(k)) weakHits += 1; }
   for (const k of enWeak) {
     if (new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text)) weakHits += 1;
   }
-  if (weakHits >= 1) return 'weak';
-  return 'none';
-}
-
-function isAiRelatedItem(item) {
-  return aiRelevanceTier(item) !== 'none';
+  return weakHits >= 1;
 }
 
 // Hybrid AI-relevance filter:
@@ -497,17 +490,11 @@ async function recheckBoundaryItemsWithGemini(borderlineItems) {
       handle: extractHandleFromItem(item) || '',
       text: extractTextFromItem(item).slice(0, 400),
     }));
-    const prompt = `你是AI行业分析师。请判断下列每条推文是否真正以 AI 为核心主题。
-
-**判断口径必须严格**（默认倾向 false，遇到中性边界倾向 false）：
-- AI 必须是这条推文的**核心主题**或**主要讨论对象**，不只是侧面提到一个 AI 关键词
-- 关于"AI 模型/AI 产品/AI 研究/AI 公司动向/AI 应用与工具/AI Agent/AI 机器人/AI 算力与 AI 芯片(H100/B200/AI 训练集群)/AI 政策/AI 公司融资"才算 true
-- **关键反例（必须返回 false）**：
-  - 纯讨论芯片供应链 / 半导体产能 / TSMC 招工 / GPU 现货价格，但**没**与 AI 训练或 AI 模型挂钩
-  - 普通编程 / Web 框架 / 数据库 / 非 AI 开发工具的讨论
-  - 股市行情、个股估值、并购财报，即便涉及 AI 公司股票也算 false
-  - 与 AI 无关的八卦、生活分享、广告、纯转发不带任何观点
-  - 仅在末尾 hashtag 里提到 #AI 但内容无关
+    const prompt = `你是AI行业分析师。请用你的判断力，对下列每条推文判断它是否属于"AI 行业有信息价值的动态"。
+判断口径（凭你的主人公意识，不需要硬性命中关键词）：
+- 与AI模型/产品/研究/团队/算力/芯片/工具链/Agent/机器人/政策/行业资本等任意角度有实质关联即算 true
+- 即使没有 AI 关键词，但讨论开发者工作流、新产品、技术趋势等对 AI 从业者有信息价值的内容也算 true
+- 纯生活分享、股市行情、广告、与AI无关的八卦、纯转发不带任何观点等返回 false
 
 严格只用 JSON 数组返回，不要解释、不要任何 markdown 包装：
 [{"i":0,"ai":true},{"i":1,"ai":false}]
@@ -546,28 +533,15 @@ ${JSON.stringify(compactList, null, 2)}`;
 }
 
 async function filterAiRelatedItems(items) {
-  // Three-tier classification:
-  // - strong: AI brand/concept names (e.g. OpenAI, Claude, 大模型) → pass directly
-  // - weak:   only weak signals (e.g. just "chip", "agent", "compute") → must
-  //           clear Gemini's "is AI the central topic?" check, otherwise dropped.
-  //           This is what lets a TSMC labor-shortage tweet that matches "chip"
-  //           get filtered out as off-topic.
-  // - none:   no signal at all → goes through the same Gemini recheck, lower
-  //           recovery rate but still catches new product names / implicit refs.
-  const strongPass = [];
-  const recheck = [];
-  let weakCount = 0;
-  let noneCount = 0;
+  const passList = [];
+  const borderline = [];
   for (const item of items || []) {
-    const tier = aiRelevanceTier(item);
-    if (tier === 'strong') strongPass.push(item);
-    else if (tier === 'weak') { recheck.push(item); weakCount += 1; }
-    else { recheck.push(item); noneCount += 1; }
+    if (isAiRelatedItem(item)) passList.push(item);
+    else borderline.push(item);
   }
-  console.log(`AI filter tiers: total=${(items || []).length}, strong_pass=${strongPass.length}, weak_recheck=${weakCount}, none_recheck=${noneCount}`);
-  if (recheck.length === 0) return strongPass;
-  const recovered = await recheckBoundaryItemsWithGemini(recheck);
-  return [...strongPass, ...recovered];
+  if (borderline.length === 0) return passList;
+  const recovered = await recheckBoundaryItemsWithGemini(borderline);
+  return [...passList, ...recovered];
 }
 
 // Rules are ordered from MOST SPECIFIC to LEAST SPECIFIC so that classifyHotspots
@@ -2099,7 +2073,7 @@ async function generateReportViaEmbedding({ items, apiKey, model }) {
   if (promptItems.length === 0) return null;
 
   const embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004';
-  const threshold = Number(process.env.EMBEDDING_CLUSTER_THRESHOLD || 0.75);
+  const threshold = Number(process.env.EMBEDDING_CLUSTER_THRESHOLD || 0.7);
   console.log(
     `Embedding clustering: items=${promptItems.length}, model=${embeddingModel}, threshold=${threshold}`,
   );
@@ -2113,21 +2087,6 @@ async function generateReportViaEmbedding({ items, apiKey, model }) {
   );
 
   const ranked = rankClusters(rawClusters);
-
-  // Debug log: print a representative sample of each cluster so threshold tuning
-  // is observable from the run log alone (no need to look at the rendered HTML).
-  const debugLimit = Number(process.env.EMBEDDING_CLUSTER_LOG_LIMIT || 15);
-  ranked.slice(0, debugLimit).forEach((c, i) => {
-    const longest = [...c.items].sort(
-      (a, b) => extractTextFromItem(b).length - extractTextFromItem(a).length,
-    )[0];
-    const sample = longest ? extractTextFromItem(longest).replace(/\s+/g, ' ').slice(0, 80) : '';
-    const handles = Array.from(new Set(
-      c.items.map((it) => normalizeHandle(extractHandleFromItem(it))).filter(Boolean),
-    )).slice(0, 4).join(',');
-    console.log(`Cluster #${i} (size=${c.items.length}, participants=${c.participantCount}, who=[${handles}]): "${sample}"`);
-  });
-
   const top3 = ranked.slice(0, Math.min(3, ranked.length)).map(dedupClusterByHandle);
   const maxSecondary = Number(process.env.SECONDARY_EVENT_LIMIT || 10);
   const secondary = ranked
