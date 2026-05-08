@@ -121,7 +121,6 @@ compositeScore = outputCount + interactionScore × 2
 | `APIFY_PEOPLE_JSON` | 否 | 人物库 JSON |
 | `GEMINI_API_KEY` | 是 | Gemini API Key |
 | `GEMINI_MODEL` | 是 | Gemini 模型名 |
-| `GEMINI_EMBEDDING_MODEL` | 否 | Gemini Embedding 模型名（默认 `gemini-embedding-001`） |
 | `GEMINI_MAX_OUTPUT_TOKENS` | 否 | 最大输出 token（默认 65536） |
 | `GEMINI_TEMPERATURE` | 否 | 温度参数（默认 1.0） |
 | `GEMINI_THINKING_LEVEL` | 否 | 思考深度 minimal / low / medium / high |
