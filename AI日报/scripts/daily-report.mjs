@@ -1994,9 +1994,10 @@ async function composeClustersToMarkdown({ top3Clusters, secondaryClusters, apiK
 - 输出参与人数等统计数字
 
 对每个 cluster，按它实际共同的主题，生成：
-- title：10-20字中文事件标题，必须忠实反映这个 cluster 的共同主题
-- analysis：1-2句中文热点解析，说明事件的业务/行业意义
-- dynamics：数组，对应输入 tweets 数组里的每条推文（同顺序），每条用一句简短中文描述该作者在这条推文里的具体观点
+- title：10-20字中文事件标题，必须忠实反映这个 cluster 中**多数推文**的真实共同主题。如果簇内推文主题分散、没有清晰共同点，请用更宏观的角度概括，不要硬贴某一条推文的细节。
+- analysis：1-2句中文热点解析，说明事件的业务/行业意义。
+- dynamics：数组，对应输入 tweets 数组里的每条推文（同顺序），每条用一句简短中文描述该作者在这条推文里的具体观点。
+  **诚实标注边缘项**：如果某条推文与簇主题关联弱（属于聚类算法的擦边收录），请在描述里如实点出，例如"与本话题关联较弱，主要在讨论 X"。不要为了让卡片好看而把它包装成主题相关。
 
 严格只用 JSON 数组返回（不要 markdown 包装、不要解释）：
 [
@@ -2073,7 +2074,7 @@ async function generateReportViaEmbedding({ items, apiKey, model }) {
   if (promptItems.length === 0) return null;
 
   const embeddingModel = process.env.GEMINI_EMBEDDING_MODEL || 'text-embedding-004';
-  const threshold = Number(process.env.EMBEDDING_CLUSTER_THRESHOLD || 0.7);
+  const threshold = Number(process.env.EMBEDDING_CLUSTER_THRESHOLD || 0.72);
   console.log(
     `Embedding clustering: items=${promptItems.length}, model=${embeddingModel}, threshold=${threshold}`,
   );
@@ -2087,6 +2088,21 @@ async function generateReportViaEmbedding({ items, apiKey, model }) {
   );
 
   const ranked = rankClusters(rawClusters);
+
+  // Per-cluster debug log: print size, participants and the longest representative
+  // tweet's first 80 chars so threshold tuning can be done from the run log alone.
+  const debugLimit = Number(process.env.EMBEDDING_CLUSTER_LOG_LIMIT || 15);
+  ranked.slice(0, debugLimit).forEach((c, i) => {
+    const longest = [...c.items].sort(
+      (a, b) => extractTextFromItem(b).length - extractTextFromItem(a).length,
+    )[0];
+    const sample = longest ? extractTextFromItem(longest).replace(/\s+/g, ' ').slice(0, 80) : '';
+    const handles = Array.from(new Set(
+      c.items.map((it) => normalizeHandle(extractHandleFromItem(it))).filter(Boolean),
+    )).slice(0, 4).join(',');
+    console.log(`Cluster #${i} (size=${c.items.length}, participants=${c.participantCount}, who=[${handles}]): "${sample}"`);
+  });
+
   const top3 = ranked.slice(0, Math.min(3, ranked.length)).map(dedupClusterByHandle);
   const maxSecondary = Number(process.env.SECONDARY_EVENT_LIMIT || 10);
   const secondary = ranked
